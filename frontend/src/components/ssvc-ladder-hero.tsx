@@ -58,28 +58,37 @@ const CASES: {
 // SSVC_META) so the hero teaches the exact visual language the report speaks:
 // position encodes urgency, the active stop carries icon + fill + text, never
 // color alone.
+//
+// Fill and text are separate classes on purpose: the fill is an aria-hidden
+// sibling of the label (it sweeps in under it), so a text color set on the fill
+// never reaches the label. One combined class left the active label on the
+// default foreground over a saturated fill (2.5:1), caught by axe-core 4.13.
 const RUNG_META: Record<
   Decision,
-  { icon: typeof Zap; activeClass: string; gloss: string }
+  { icon: typeof Zap; fillClass: string; textClass: string; gloss: string }
 > = {
   Act: {
     icon: Zap,
-    activeClass: "bg-destructive text-destructive-foreground",
+    fillClass: "bg-destructive",
+    textClass: "text-destructive-foreground",
     gloss: "remediate out-of-cycle",
   },
   Attend: {
     icon: AlertTriangle,
-    activeClass: "bg-warning text-warning-foreground",
+    fillClass: "bg-warning",
+    textClass: "text-warning-foreground",
     gloss: "ahead of standard timelines",
   },
   "Track*": {
     icon: Radar,
-    activeClass: "bg-[hsl(var(--severity-low))] text-background",
+    fillClass: "bg-[hsl(var(--severity-low))]",
+    textClass: "text-background",
     gloss: "standard timeline, watch for escalation",
   },
   Track: {
     icon: CircleCheck,
-    activeClass: "bg-secondary text-foreground ring-1 ring-inset ring-primary/30",
+    fillClass: "bg-secondary ring-1 ring-inset ring-primary/30",
+    textClass: "text-foreground",
     gloss: "standard update timelines",
   },
 };
@@ -154,14 +163,14 @@ export function SsvcLadderHero() {
                   aria-hidden
                   className={cn(
                     "absolute inset-0 origin-left transition-transform duration-500 ease-out",
-                    meta.activeClass,
+                    meta.fillClass,
                     isActive ? "scale-x-100" : "scale-x-0",
                   )}
                 />
                 <span
                   className={cn(
                     "relative flex items-center gap-2.5 px-3 py-2 transition-colors duration-300",
-                    !isActive && "text-muted-foreground",
+                    isActive ? meta.textClass : "text-muted-foreground",
                   )}
                 >
                   <Icon className="h-3.5 w-3.5 shrink-0" />
@@ -171,7 +180,9 @@ export function SsvcLadderHero() {
                   <span
                     className={cn(
                       "ml-auto hidden font-mono text-[10px] sm:inline",
-                      isActive ? "opacity-80" : "opacity-60",
+                      // Full opacity when active: at 80% the 10px id drops below
+                      // 4.5:1 on three of the four light-theme fills.
+                      !isActive && "opacity-60",
                     )}
                   >
                     {isActive ? c.cve : meta.gloss}

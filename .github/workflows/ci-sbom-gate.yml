@@ -72,7 +72,7 @@ jobs:
         run: uv export --frozen --no-hashes --no-emit-project --output-file requirements.txt
 
       - name: Generate the repository SBOM
-        uses: anchore/sbom-action@v0.24.0
+        uses: anchore/sbom-action@v0.24.2
         with:
           path: .
           format: cyclonedx-json

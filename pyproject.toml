@@ -30,7 +30,11 @@ dependencies = [
     # CVE-2026-58203 (NestedSecretsSettingsSource follows symlinks out of the
     # secrets dir). Floor moved to the fixed release, where the lock already sat.
     "pydantic-settings>=2.14.2",
-    "mcp>=1.28.1",
+    # Capped below 2: mcp 2.0 renamed FastMCP to MCPServer and mcp_server/ is
+    # written against the 1.x API. Without the cap any unlocked install (the
+    # gate action before it read uv.lock, a plain `pip install`) resolves 2.x
+    # and dies at import. Lift it with the 2.x migration, not before.
+    "mcp>=1.28.1,<2",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
     "httpx>=0.27.0",

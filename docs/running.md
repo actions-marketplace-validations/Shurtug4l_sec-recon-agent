@@ -171,7 +171,7 @@ The full `GateReport` JSON (findings, per-feed coverage, skipped components, agg
 
 ### As a GitHub Action
 
-The gate ships as a composite action at the repository root; the action ref is the package source, so pinning the action pins the gate:
+The gate ships as a composite action at the repository root; the action ref is the package source and its `uv.lock` is the dependency source (installed with `--require-hashes`), so pinning the action pins the gate and its whole dependency tree:
 
 ```yaml
 permissions:

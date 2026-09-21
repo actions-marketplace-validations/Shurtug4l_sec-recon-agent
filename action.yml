@@ -89,10 +89,23 @@ runs:
       env:
         PYTHON_VERSION: ${{ inputs.python-version }}
         ACTION_PATH: ${{ github.action_path }}
+      # Dependencies install from the action ref's own uv.lock, hash-verified,
+      # and the package itself goes in with --no-deps. Pinning the action then
+      # pins the whole tree, not only the gate's code: an unlocked
+      # `uv pip install "$ACTION_PATH"` re-resolved on every run, so an
+      # upstream major (mcp 2.0 dropping FastMCP) broke every consumer of an
+      # already-released tag, and a hijacked transitive release would have
+      # executed in their CI unreviewed. Residual: the build backend is still
+      # fetched unhashed by build isolation.
       run: |
+        venv="$RUNNER_TEMP/sec-recon-gate-venv"
+        reqs="$RUNNER_TEMP/sec-recon-gate-requirements.txt"
         uv python install "$PYTHON_VERSION"
-        uv venv --python "$PYTHON_VERSION" "$RUNNER_TEMP/sec-recon-gate-venv"
-        uv pip install --python "$RUNNER_TEMP/sec-recon-gate-venv/bin/python" "$ACTION_PATH"
+        uv venv --python "$PYTHON_VERSION" "$venv"
+        uv export --project "$ACTION_PATH" --frozen --no-dev --no-emit-project \
+          --output-file "$reqs" > /dev/null
+        uv pip install --python "$venv/bin/python" --require-hashes -r "$reqs"
+        uv pip install --python "$venv/bin/python" --no-deps "$ACTION_PATH"
 
     - name: Run the gate
       id: gate

@@ -8,9 +8,23 @@ name: frontend-e2e
 # fails here instead of reaching the live Pages site. The P6-class failures (a nav
 # link surviving a route rename, a header overflowing a mid-width band) shipped
 # precisely because these checks were a manual pre-push ritual, not a gate.
+#
+# Two modes, one job (the required-check name must not change):
+# - pull_request: sweep tooling pinned exact. A required check that floats on
+#   upstream releases lets a third party block every merge. axe-core 4.13
+#   (2026-08-11) started resolving backgrounds through positioned siblings and
+#   flagged a real contrast bug; the finding was right, the delivery was not:
+#   every PR went red, backend-only ones included, and the Dependabot
+#   auto-merge queue sat blocked for six weeks with criticals in it.
+# - schedule / dispatch: the same sweep on floating majors against main. Drift
+#   shows up as one red run on main, where it blocks nothing. When it is green
+#   on a newer release, move the pins below (Dependabot cannot see them).
 on:
   pull_request:
     branches: [main]
+  schedule:
+    # Monday 07:30 UTC, after docker-scan (06:30) and sbom-gate (07:00).
+    - cron: "30 7 * * 1"
   workflow_dispatch:
 
 concurrency:
@@ -31,6 +45,12 @@ jobs:
       # Scope routes + assets under the project Pages sub-path, so the export and
       # the sweep's static server mirror https://<user>.github.io/<repo>/ exactly.
       NEXT_PUBLIC_BASE_PATH: /sec-recon-agent
+      # Pinned for the required PR check, floating for the drift canary. The
+      # Chromium build follows the Playwright version, so the pin covers it too.
+      SWEEP_TOOLING: >-
+        ${{ github.event_name == 'pull_request'
+        && 'playwright@1.63.0 @axe-core/playwright@4.13.0'
+        || 'playwright@1 @axe-core/playwright@4' }}
 
     steps:
       - uses: actions/checkout@v7
@@ -47,9 +67,11 @@ jobs:
       - name: Install Playwright (ephemeral, not a package.json dep)
         # The browser binary is heavy and the other frontend jobs must stay lean,
         # so the sweep's deps live only here (--no-save), never in the lockfile.
-        # Major-pinned: Playwright has no 2.x, @axe-core/playwright tracks axe 4.x.
+        # Versions come from SWEEP_TOOLING (see the header). Unquoted on purpose:
+        # it is a space-separated package list.
         run: |
-          npm i --no-save --no-audit --no-fund --legacy-peer-deps playwright@1 "@axe-core/playwright@4"
+          # shellcheck disable=SC2086
+          npm i --no-save --no-audit --no-fund --legacy-peer-deps $SWEEP_TOOLING
           npx playwright install --with-deps chromium
 
       - name: Build static demo export
