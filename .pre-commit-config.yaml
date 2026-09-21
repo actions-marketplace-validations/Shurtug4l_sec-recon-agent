@@ -15,7 +15,7 @@ repos:
     # rev here ships its own ruff binary, which must understand every
     # rule selector in pyproject.toml (e.g. ASYNC240 from 0.8.x).
     # Bumped by the pre-commit ecosystem in .github/dependabot.yml.
-    rev: v0.16.1
+    rev: v0.16.8
     hooks:
       - id: ruff-check
         args: ["--fix"]
