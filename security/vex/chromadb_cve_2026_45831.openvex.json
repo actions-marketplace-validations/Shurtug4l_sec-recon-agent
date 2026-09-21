@@ -1,0 +1,35 @@
+{
+  "@id": "https://openvex.dev/docs/public/vex-05a6fada543695ba19b53804e508c75394a6421bf670f817a8571ba6d01c1cc8",
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "author": "https://github.com/Shurtug4l/sec-recon-agent",
+  "timestamp": "2026-09-21T00:00:00+00:00",
+  "version": 1,
+  "statements": [
+    {
+      "vulnerability": {
+        "@id": "https://github.com/advisories/GHSA-xph7-9rjv-w5fr",
+        "name": "CVE-2026-45831",
+        "description": "ChromaDB's SimpleRBACAuthorizationProvider does not check which tenant, database, or collection a permission applies to."
+      },
+      "products": [
+        {
+          "@id": "pkg:github/Shurtug4l/sec-recon-agent",
+          "identifiers": {
+            "purl": "pkg:github/Shurtug4l/sec-recon-agent"
+          }
+        }
+      ],
+      "subcomponents": [
+        {
+          "@id": "pkg:pypi/chromadb@1.5.9",
+          "identifiers": {
+            "purl": "pkg:pypi/chromadb@1.5.9"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "chromadb is used only as an embedded, file-backed store: mcp_server/tools/cve_search.py builds a chromadb.PersistentClient inside the MCP server process, and the deployment runs no ChromaDB service at all (docker-compose ships mcp-server, agent-api, seed-job, frontend and jaeger). The flaw lives in chromadb.auth.simple_rbac_authz.SimpleRBACAuthorizationProvider, which ChromaDB instantiates only when a server is configured with chroma_server_authz_provider. This deployment sets no authorization provider and starts no server, so the class is never instantiated: the vulnerable code ships inside the installed package but sits outside every execution path. No patched chromadb release exists (1.5.9 is still the latest on PyPI as of 2026-09-21), so this statement is revisited when a fixed version ships."
+    }
+  ]
+}

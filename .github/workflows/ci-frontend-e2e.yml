@@ -84,3 +84,15 @@ jobs:
 
       - name: Accessibility + overflow sweep
         run: npm run a11y:sweep
+
+  # Scheduled runs block nothing, so a red one is easy to miss. This turns the
+  # result into an issue (opened on failure, closed on the next green run).
+  report:
+    name: report scheduled result
+    needs: export-and-verify
+    if: always() && github.event_name == 'schedule'
+    permissions:
+      issues: write
+    uses: ./.github/workflows/report-scheduled-result.yml
+    with:
+      result: ${{ needs.export-and-verify.result }}

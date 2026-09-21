@@ -1,0 +1,35 @@
+{
+  "@id": "https://openvex.dev/docs/public/vex-881af7b7b077e57526b644b6aa53b936913193bc9ba297557302355c53878514",
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "author": "https://github.com/Shurtug4l/sec-recon-agent",
+  "timestamp": "2026-09-21T00:00:00+00:00",
+  "version": 1,
+  "statements": [
+    {
+      "vulnerability": {
+        "@id": "https://github.com/advisories/GHSA-2wm9-hf6c-p5cr",
+        "name": "CVE-2026-45830",
+        "description": "ChromaDB allows any authenticated users to arbitrarily read, write, update, or delete data in any tenant's collection."
+      },
+      "products": [
+        {
+          "@id": "pkg:github/Shurtug4l/sec-recon-agent",
+          "identifiers": {
+            "purl": "pkg:github/Shurtug4l/sec-recon-agent"
+          }
+        }
+      ],
+      "subcomponents": [
+        {
+          "@id": "pkg:pypi/chromadb@1.5.9",
+          "identifiers": {
+            "purl": "pkg:pypi/chromadb@1.5.9"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "chromadb is used only as an embedded, file-backed store: mcp_server/tools/cve_search.py builds a chromadb.PersistentClient inside the MCP server process, and the deployment runs no ChromaDB service at all (docker-compose ships mcp-server, agent-api, seed-job, frontend and jaeger). The flaw is a missing authorization check in the HTTP server's request handling: it needs an authenticated remote user and a multi-tenant server to act across. Neither exists here. No server is started, no chroma_server_* setting is configured, and the only caller of the store is this repository's own code in the same process, which is not subject to ChromaDB authorization in the first place. The vulnerable code ships inside the installed package but sits outside every execution path. No patched chromadb release exists (1.5.9 is still the latest on PyPI as of 2026-09-21), so this statement is revisited when a fixed version ships."
+    }
+  ]
+}

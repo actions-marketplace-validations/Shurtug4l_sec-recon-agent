@@ -1,0 +1,35 @@
+{
+  "@id": "https://openvex.dev/docs/public/vex-1815bc94ff37b4836af79402dbef55ae1032736122bbee21d6f9229b8e73a26d",
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "author": "https://github.com/Shurtug4l/sec-recon-agent",
+  "timestamp": "2026-09-21T00:00:00+00:00",
+  "version": 1,
+  "statements": [
+    {
+      "vulnerability": {
+        "@id": "https://github.com/advisories/GHSA-36p7-vc44-83pf",
+        "name": "CVE-2026-45833",
+        "description": "ChromaDB has a code injection vulnerability: an authenticated attacker with UPDATE_COLLECTION can submit a malicious model repository with trust_remote_code set to true."
+      },
+      "products": [
+        {
+          "@id": "pkg:github/Shurtug4l/sec-recon-agent",
+          "identifiers": {
+            "purl": "pkg:github/Shurtug4l/sec-recon-agent"
+          }
+        }
+      ],
+      "subcomponents": [
+        {
+          "@id": "pkg:pypi/chromadb@1.5.9",
+          "identifiers": {
+            "purl": "pkg:pypi/chromadb@1.5.9"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "impact_statement": "chromadb is used only as an embedded, file-backed store: mcp_server/tools/cve_search.py builds a chromadb.PersistentClient inside the MCP server process, and the deployment runs no ChromaDB service at all (docker-compose ships mcp-server, agent-api, seed-job, frontend and jaeger). Unlike the other ChromaDB advisories attested for this product, vulnerable_code_not_in_execute_path would be false here. The sink is the instantiation of an embedding function from a persisted collection configuration (api/collection_configuration.py, known_embedding_functions[name].build_from_config), and that code does run in embedded mode every time the collection is opened. What the adversary lacks is control of its input, for two independent reasons. First, the advisory's entry point is the authenticated HTTP collection-update endpoint, which does not exist here: the collection configuration is written by exactly one caller, get_or_create_collection in cve_search.py, and it names DefaultEmbeddingFunction (the bundled ONNX model, no kwargs). Second, the embedding functions that forward kwargs such as trust_remote_code to a Hugging Face loader import sentence_transformers or transformers at construction, and neither package is in uv.lock (verified 2026-09-21); the backend image installs exactly that lock (uv sync --frozen --no-dev), so they cannot appear by resolution drift. A planted configuration would raise at import rather than load remote code. Residual, stated rather than hidden: an attacker who can already write to the Chroma persist volume could alter the stored configuration, which is a different trust boundary from the advisory's (local write access to a volume mounted into containers that run with a read-only root filesystem), and still hits the missing loader. Adding sentence-transformers or transformers to the dependency tree invalidates the second argument and requires revisiting this statement. No patched chromadb release exists (1.5.9 is still the latest on PyPI as of 2026-09-21), so this statement is revisited when a fixed version ships."
+    }
+  ]
+}

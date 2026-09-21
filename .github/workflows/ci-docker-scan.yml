@@ -126,3 +126,15 @@ jobs:
         with:
           sarif_file: trivy-${{ matrix.image.name }}.sarif
           category: trivy-${{ matrix.image.name }}
+
+  # Scheduled runs block nothing, so a red one is easy to miss. This turns the
+  # result into an issue (opened on failure, closed on the next green run).
+  report:
+    name: report scheduled result
+    needs: scan
+    if: always() && github.event_name == 'schedule'
+    permissions:
+      issues: write
+    uses: ./.github/workflows/report-scheduled-result.yml
+    with:
+      result: ${{ needs.scan.result }}

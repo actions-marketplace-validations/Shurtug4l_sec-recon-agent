@@ -1,0 +1,70 @@
+name: report-scheduled-result
+
+# Durable signal for scheduled runs. A red cron run only sends a notification
+# mail, and in 2026-09 three of them (frontend-e2e drift, sbom-gate, docker-scan)
+# stayed red for two to six weeks unnoticed while the Dependabot queue piled up
+# behind the first. An open issue is harder to miss than a mail.
+#
+# Called from the scheduled workflows with the result of their main job:
+# - failure: open one `ci-drift` issue per workflow, or comment on the open one;
+# - success: close it, so the issue list never carries a stale red signal.
+#
+# `github.workflow` and `github.run_id` resolve to the CALLER here, which is what
+# the title and the run link need. The caller grants `issues: write` to this job
+# only, and only on schedule; PR runs never reach it.
+on:
+  workflow_call:
+    inputs:
+      result:
+        description: "needs.<job>.result of the caller's main job."
+        required: true
+        type: string
+
+jobs:
+  report:
+    name: open or close the drift issue
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+
+    steps:
+      - name: Sync the ci-drift issue with the run result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RESULT: ${{ inputs.result }}
+          WORKFLOW: ${{ github.workflow }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Scheduled run failing: $WORKFLOW"
+          gh label create ci-drift --color B60205 \
+            --description "A scheduled workflow is red on main" 2>/dev/null || true
+
+          number=$(gh issue list --state open --label ci-drift --limit 100 --json number,title \
+            | jq -r --arg t "$title" 'map(select(.title == $t)) | .[0].number // empty')
+
+          case "$RESULT" in
+            success)
+              if [ -n "$number" ]; then
+                gh issue close "$number" --comment "Green again: $RUN_URL"
+              fi
+              ;;
+            failure)
+              if [ -n "$number" ]; then
+                gh issue comment "$number" --body "Still failing: $RUN_URL"
+              else
+                {
+                  echo "The scheduled \`$WORKFLOW\` run on main failed: $RUN_URL"
+                  echo
+                  echo "Scheduled runs block nothing, so nothing else will surface this."
+                  echo "This issue closes itself on the next green scheduled run."
+                } > body.md
+                gh issue create --title "$title" --label ci-drift --body-file body.md
+              fi
+              ;;
+            *)
+              # cancelled / skipped: no signal either way.
+              echo "result is '$RESULT', nothing to report"
+              ;;
+          esac

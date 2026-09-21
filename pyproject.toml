@@ -23,9 +23,16 @@ dependencies = [
     # advisories in the weekly Trivy scan, on code this agent never calls).
     # Anthropic is the only provider in ALLOWED_MODELS; `mcp` backs
     # pydantic_ai.mcp.MCPToolset. Adding a provider means adding its extra here.
-    # Floor is the min-patched 1.x (CVE-2026-48782 SSRF blocklist bypass, fixed
-    # in 1.102.0), per the within-major pinning decision.
-    "pydantic-ai-slim[anthropic,mcp]>=1.102.0",
+    # Floor: 1.106.0 is the min-patched 1.x (GHSA-h7p7-w5gc-xj3w, unvalidated
+    # UploadedFile references in the UI adapters; before it CVE-2026-48782,
+    # fixed in 1.102.0), but the floor sits at 1.107.6 because it is the first
+    # 1.x that declares `anthropic<1`. Every earlier 1.x leaves the SDK
+    # unbounded, a fresh resolve then picks anthropic 1.x, and that SDK rejects
+    # the httpx.AsyncClient pydantic-ai hands it: TypeError at agent
+    # construction. The `<2` cap is the within-major pinning decision made
+    # explicit: lock, tests and cassettes are all built on 1.x, upstream is at
+    # 2.46, and without the cap an unlocked install ran 2.x for weeks unnoticed.
+    "pydantic-ai-slim[anthropic,mcp]>=1.107.6,<2",
     # The old >=2.6.0 floor spanned the 2.12.0-2.14.1 window affected by
     # CVE-2026-58203 (NestedSecretsSettingsSource follows symlinks out of the
     # secrets dir). Floor moved to the fixed release, where the lock already sat.
