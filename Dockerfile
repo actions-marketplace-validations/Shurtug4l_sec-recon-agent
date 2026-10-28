@@ -9,7 +9,7 @@
 # repo (the python and node base images). The pin is exact and matches the uv
 # that writes uv.lock.
 # ============================================================================
-FROM ghcr.io/astral-sh/uv:0.12.21 AS uv
+FROM ghcr.io/astral-sh/uv:0.13.6 AS uv
 
 # ============================================================================
 # Builder stage: install dependencies into a virtualenv using uv.
