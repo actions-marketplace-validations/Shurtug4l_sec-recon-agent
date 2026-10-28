@@ -101,7 +101,7 @@ function ProblemPanel() {
       </Lead>
       <Lead>
         That is also the exact shape of indirect prompt injection (OWASP
-        LLM01, MITRE ATLAS AML.T0040). The dangerous input is not a side
+        LLM01, MITRE ATLAS AML.T0051.001). The dangerous input is not a side
         channel to be closed; it is the payload the system exists to process.
         You cannot refuse to read it without deleting the product.
       </Lead>

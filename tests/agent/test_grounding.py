@@ -98,8 +98,13 @@ def _cve_detail_content(score: float | None = 10.0) -> dict[str, Any]:
     }
 
 
-def _exploit_content(has_exploit: bool = True) -> dict[str, Any]:
-    return {"cve_id": CVE, "has_public_exploit": has_exploit}
+def _exploit_content(has_exploit: bool = True, *, github: str = "skipped") -> dict[str, Any]:
+    return {
+        "cve_id": CVE,
+        "has_public_exploit": has_exploit,
+        "exploit_db": "found" if has_exploit else "not_found",
+        "github": github,
+    }
 
 
 def _statuses(report: TriageReport, invocations: list[ToolInvocation]) -> dict[str, str]:
@@ -460,3 +465,21 @@ def test_findings_cap_sets_truncated_and_keeps_counts() -> None:
     )
     assert total == assessment.claims_checked
     assert assessment.unbacked + assessment.mismatched > MAX_FINDINGS
+
+
+def test_exploit_return_with_an_errored_arm_cannot_back_a_claim() -> None:
+    """A False with a source in error is unknown: it neither backs a positive
+    claim nor contradicts it, so the claim degrades to unverifiable."""
+    inconclusive = [_invocation("exploit_check", _exploit_content(False, github="error"))]
+    statuses = _statuses(_report(_cve(exploits_public=True)), inconclusive)
+    assert statuses["exploits_public"] == "unverifiable"
+    # A negative claim over the same return is not a claim at all.
+    assessment = verify_grounding(_report(_cve(exploits_public=False)), inconclusive)
+    assert assessment.status is GroundingStatus.GROUNDED
+    assert not [f for f in assessment.findings if f.field == "exploits_public"]
+
+
+def test_exploit_return_with_conclusive_arms_contradicts_an_inflated_claim() -> None:
+    conclusive = [_invocation("exploit_check", _exploit_content(False, github="not_found"))]
+    statuses = _statuses(_report(_cve(exploits_public=True)), conclusive)
+    assert statuses["exploits_public"] == "mismatch"

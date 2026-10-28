@@ -65,16 +65,28 @@ class BudgetTracker:
             return False
         return await self.spent_usd() >= ceiling
 
-    async def record(self, usd: float | None) -> None:
-        """Add a completed run's estimated cost to the window. No-ops when the
-        guard is disabled or the cost is unknown/non-positive (an unpriced
-        model yields None, and must not silently count as zero-forever)."""
+    def record_now(self, usd: float | None) -> None:
+        """Add a run's estimated cost to the window, synchronously.
+
+        The triage generator charges the run from its `finally`, which after
+        a client disconnect executes inside a cancelled anyio scope where
+        every `await` re-raises CancelledError: an awaited record would never
+        land, and the rail would be defeated by the cheapest client behaviour
+        there is. No lock is needed: nothing awaits between prune and append,
+        and the event loop is single-threaded. No-ops when the guard is
+        disabled or the cost is unknown/non-positive (an unpriced model
+        yields None, and must not silently count as zero-forever).
+        """
         if self._ceiling() is None or usd is None or usd <= 0:
             return
+        now = time.monotonic()
+        self._prune(now)
+        self._events.append((now, usd))
+
+    async def record(self, usd: float | None) -> None:
+        """Awaitable form of `record_now`, for callers on a live scope."""
         async with self._lock:
-            now = time.monotonic()
-            self._prune(now)
-            self._events.append((now, usd))
+            self.record_now(usd)
 
     def reset(self) -> None:
         """Test-only: drop the accumulated window."""

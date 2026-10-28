@@ -104,15 +104,21 @@ def rrf_fuse(rankings: Sequence[Sequence[str]], k: int = RRF_K) -> list[str]:
 
     Rank is 1-indexed. Documents appearing in several rankings accumulate;
     ties break on best single rank, then lexicographic id, so the fused
-    order is deterministic.
+    order is deterministic. Contributions are summed with `math.fsum`, which
+    is exactly rounded and therefore independent of the order the rankings
+    arrive in: with plain `+=`, two documents holding the same multiset of
+    ranks could land on different floats (a + a + b != b + a + a in binary
+    floating point) and the fused order would depend on which ranking came
+    first. Hypothesis found that case.
     """
-    scores: dict[str, float] = {}
+    contributions: dict[str, list[float]] = {}
     best_rank: dict[str, int] = {}
     for ranking in rankings:
         for rank, doc_id in enumerate(ranking, start=1):
-            scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (k + rank)
+            contributions.setdefault(doc_id, []).append(1.0 / (k + rank))
             if rank < best_rank.get(doc_id, rank + 1):
                 best_rank[doc_id] = rank
+    scores = {doc_id: math.fsum(parts) for doc_id, parts in contributions.items()}
     ordered = sorted(
         scores.items(),
         key=lambda item: (-item[1], best_rank[item[0]], item[0]),

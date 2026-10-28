@@ -116,7 +116,13 @@ const STATUS_META: Record<
   "not-evaluated": { icon: CircleDashed, label: "not evaluated", iconClass: "text-muted-foreground/70" },
 };
 
-export function SsvcDecisionTrace({ ssvc }: { ssvc: SsvcAssessment }) {
+export function SsvcDecisionTrace({
+  ssvc,
+  shared = false,
+}: {
+  ssvc: SsvcAssessment;
+  shared?: boolean;
+}) {
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
@@ -178,6 +184,9 @@ export function SsvcDecisionTrace({ ssvc }: { ssvc: SsvcAssessment }) {
               below it are never reached. This ladder is a static mirror of{" "}
               <code className="font-mono text-foreground/80">agent/ssvc.py</code>,
               the code that actually decides.
+              {shared
+                ? " On a shared link the rule id comes from the link itself, so the matched row is the link's claim, not a decision this site made."
+                : ""}
             </p>
 
             <ol className="mt-3 space-y-1">

@@ -19,12 +19,12 @@ from typing import Any
 import httpx
 import structlog
 
+from sec_recon_agent.mcp_server.effects import declared_tool
 from sec_recon_agent.mcp_server.errors import (
     EpssRequestError,
     MalformedEpssPayloadError,
 )
 from sec_recon_agent.mcp_server.models import CveIdStr, EpssScore, EpssStatus
-from sec_recon_agent.mcp_server.server import mcp
 from sec_recon_agent.observability import get_tracer
 
 log = structlog.get_logger()
@@ -49,7 +49,7 @@ def _coerce_score(value: Any) -> float | None:
     return parsed
 
 
-@mcp.tool()
+@declared_tool()
 async def epss_score(cve_id: CveIdStr) -> EpssScore:
     """Fetch the EPSS exploit-prediction probability and percentile for a CVE.
 

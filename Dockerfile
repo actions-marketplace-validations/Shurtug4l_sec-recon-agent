@@ -1,13 +1,24 @@
 # syntax=docker/dockerfile:1.7
 
 # ============================================================================
+# uv, as a named stage instead of an inline `COPY --from=<image>:<tag>`.
+# The inline form sat on the floating `uv:0.5` tag through every monthly
+# Dependabot docker batch without a single bump proposed, while CI ran 0.11.x
+# and the lock was written by 0.11.28: three uv versions across one resolution
+# contract. A FROM line is the form Dependabot demonstrably updates in this
+# repo (the python and node base images). The pin is exact and matches the uv
+# that writes uv.lock.
+# ============================================================================
+FROM ghcr.io/astral-sh/uv:0.12.21 AS uv
+
+# ============================================================================
 # Builder stage: install dependencies into a virtualenv using uv.
 # Kept separate from runtime so the final image does not carry uv or its cache.
 # ============================================================================
 FROM python:3.14-slim AS builder
 
-# Pull the uv binary from the official distroless image (small, signed).
-COPY --from=ghcr.io/astral-sh/uv:0.5 /uv /usr/local/bin/uv
+# The uv binary from the official distroless image (small, signed).
+COPY --from=uv /uv /usr/local/bin/uv
 
 ENV UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
@@ -43,6 +54,20 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# No package manager in the runtime image. The venv is built by uv in the
+# builder stage and copied in, so pip is never invoked here. What the base
+# image's pip does ship is vendored copies of other projects
+# (pip/_vendor/vendor.txt: msgpack 1.1.2, setuptools 70.3.0), which Trivy
+# flags (GHSA-6v7p-g79w-8964, CVE-2025-47273, CVE-2026-59890) and which no
+# lockfile bump can reach, because they are not in any lockfile. Removing pip
+# closes them at the root and takes an install primitive away from anyone who
+# lands code execution in the container. Same structural fix as the frontend
+# image, where npm/corepack/yarn left the runtime stage. The model bake
+# further down imports chromadb and runs an inference with pip already gone,
+# so a venv that secretly needed it fails the build, not the deployment.
+RUN python -m pip uninstall -y pip \
+    && rm -rf /usr/local/bin/pip* /usr/local/lib/python3*/ensurepip/_bundled
 
 # Run as a non-root user. UID 1000 is the convention; matches typical host
 # users so bind-mounted data/ stays owned by the same uid outside the container.

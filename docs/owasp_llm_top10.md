@@ -94,7 +94,7 @@ Mitigations are layered, not perfect. A "mitigated" status means the project app
 
 **Status**: mitigated.
 
-**How**: the tool surface is deliberately read-only. The 10 MCP tools (`cve_lookup`, `cve_semantic_search`, `exploit_check`, `kev_check`, `epss_score`, `patch_lookup`, `osv_lookup`, `sbom_ingest`, `nmap_parse_xml`, `attack_mapping`) all perform lookups or in-process parsing; none can mutate state, send messages, write files outside the disk cache directories, or invoke external commands. The agent cannot escalate to side-effecting actions because no side-effecting tool exists.
+**How**: the tool surface is deliberately read-only. The 10 MCP tools (`cve_lookup`, `cve_semantic_search`, `exploit_check`, `kev_check`, `epss_score`, `patch_lookup`, `osv_lookup`, `sbom_ingest`, `nmap_parse_xml`, `attack_mapping`) all perform lookups or in-process parsing; none can mutate state, send messages, write files outside the disk cache directories, or invoke external commands. The agent cannot escalate to side-effecting actions because no side-effecting tool exists. The posture is declared and checked, not just stated: every tool declares its effects in `mcp_server/effects.py`, registration fails for an undeclared tool, a test asserts that no tool mutates external state, and the MCP annotations clients use to gate approvals are derived from that declaration. The declaration is reviewed, not runtime-enforced.
 
 Per-request model override is allowlisted (`src/sec_recon_agent/agent/triage.py::ALLOWED_MODELS`); an attacker cannot probe arbitrary model identifiers through the body field.
 

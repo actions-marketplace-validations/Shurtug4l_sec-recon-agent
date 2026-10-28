@@ -63,7 +63,7 @@ class TriageEvent(BaseModel):
     # Execution context ----------------------------------------------------
     model: str
     duration_ms: int = Field(ge=0)
-    outcome: str  # "success" | "error" | "timeout"
+    outcome: str  # "success" | "error" | "cancelled" (client gone) | "incomplete"
     error_class: str | None = None  # only when outcome != "success"
 
     # Chain ---------------------------------------------------------------

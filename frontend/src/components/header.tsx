@@ -111,7 +111,14 @@ export function Header() {
         Skip to content
       </a>
       <div className="container flex h-14 items-center justify-between gap-3">
-        <Link href="/" className="flex shrink-0 items-center gap-2" aria-label="sec-recon-agent home">
+        {/* The label carries the tagline too: every word visible at xl must be
+            in the accessible name, so speech users can say what they see
+            (WCAG 2.5.3, axe label-content-name-mismatch). */}
+        <Link
+          href="/"
+          className="flex shrink-0 items-center gap-2"
+          aria-label="sec-recon-agent, Pydantic AI + MCP security triage, home"
+        >
           <ShieldAlert className="h-5 w-5 text-primary" />
           <span className="hidden font-mono text-sm font-semibold sm:inline">sec-recon-agent</span>
           <span className="hidden text-xs text-muted-foreground xl:inline">
@@ -135,7 +142,10 @@ export function Header() {
           <button
             type="button"
             onClick={openPalette}
-            aria-label="Open command palette"
+            // Mirrors the visible "Search..." label and kbd hint in order, so
+            // the name contains what is on screen (WCAG 2.5.3).
+            aria-label={modKey ? `Search ${modKey}K, open command palette` : "Search, open command palette"}
+            aria-keyshortcuts={modKey === "⌘" ? "Meta+K" : "Control+K"}
             className={cn(
               "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
               RING,

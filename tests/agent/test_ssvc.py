@@ -117,7 +117,7 @@ def test_ransomware_false_does_not_trigger_act() -> None:
 
 
 def test_assess_empty_report_is_track_no_cves() -> None:
-    assessment = assess_ssvc([])
+    assessment = assess_ssvc([], None)
     assert assessment.decision is SsvcDecision.TRACK
     assert assessment.rule == "no-cves"
     assert assessment.driving_cve is None
@@ -131,7 +131,7 @@ def test_assess_all_track_report_records_driver() -> None:
         _cve("CVE-2024-35195", severity=Severity.MEDIUM),  # baseline / Track
         _cve("CVE-2024-47081", severity=Severity.LOW),  # baseline / Track
     ]
-    assessment = assess_ssvc(cves)
+    assessment = assess_ssvc(cves, None)
     assert assessment.decision is SsvcDecision.TRACK
     assert assessment.rule == "baseline"
     assert assessment.driving_cve == "CVE-2024-35195"
@@ -145,13 +145,13 @@ def test_assess_picks_most_urgent_cve_and_records_driver() -> None:
         _cve("CVE-2021-44228", in_kev=True),  # Act
         _cve("CVE-2022-0002", exploit_public=True, epss=0.2),  # Attend
     ]
-    assessment = assess_ssvc(cves)
+    assessment = assess_ssvc(cves, None)
     assert assessment.decision is SsvcDecision.ACT
     assert assessment.driving_cve == "CVE-2021-44228"
     assert "CVE-2021-44228" in assessment.rationale
 
 
 def test_assess_rationale_is_bounded() -> None:
-    assessment = assess_ssvc([_cve(in_kev=True)])
+    assessment = assess_ssvc([_cve(in_kev=True)], None)
     assert len(assessment.rationale) <= 500
     assert assessment.decision.value in assessment.rationale

@@ -20,6 +20,7 @@ from typing import Any
 import httpx
 import structlog
 
+from sec_recon_agent.mcp_server.effects import declared_tool
 from sec_recon_agent.mcp_server.errors import (
     CveNotFoundError,
     MalformedNvdPayloadError,
@@ -30,7 +31,6 @@ from sec_recon_agent.mcp_server.models import (
     PatchEntry,
 )
 from sec_recon_agent.mcp_server.nvd_client import HTTP_TIMEOUT_SECONDS, nvd_get
-from sec_recon_agent.mcp_server.server import mcp
 from sec_recon_agent.observability import get_tracer
 
 log = structlog.get_logger()
@@ -108,7 +108,7 @@ def _extract_references(cve: dict[str, Any]) -> list[str]:
     return refs
 
 
-@mcp.tool()
+@declared_tool()
 async def patch_lookup(cve_id: CveIdStr) -> PatchAvailability:
     """Return the list of fixed versions for a CVE as declared by NVD.
 

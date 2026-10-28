@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from sec_recon_agent.agent.schema import Severity, SsvcAssessment, SsvcDecision
+from sec_recon_agent.agent.schema import Severity, SsvcAssessment, SsvcBasis, SsvcDecision
 from sec_recon_agent.export.openvex import ProductIdentityError
 from sec_recon_agent.gate.models import (
     FeedCoverage,
@@ -59,7 +59,11 @@ def report(findings: list[GateFinding], **overrides: Any) -> GateReport:
         "components_scanned": 2,
         "findings": findings,
         "ssvc": SsvcAssessment(
-            decision=SsvcDecision.TRACK, rule="no-cves", rationale="test", driving_cve=None
+            decision=SsvcDecision.TRACK,
+            rule="no-cves",
+            rationale="test",
+            driving_cve=None,
+            basis=SsvcBasis.EVIDENCE,
         ),
         "policy": GatePolicy(fail_on="act", triggered=[], passed=True),
         "tool_version": "0.1.0",

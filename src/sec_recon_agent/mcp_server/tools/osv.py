@@ -32,6 +32,7 @@ from tenacity import (
     wait_exponential,
 )
 
+from sec_recon_agent.mcp_server.effects import declared_tool
 from sec_recon_agent.mcp_server.errors import (
     MalformedOsvPayloadError,
     OsvConnectionError,
@@ -39,6 +40,7 @@ from sec_recon_agent.mcp_server.errors import (
     OsvServerError,
 )
 from sec_recon_agent.mcp_server.models import (
+    OSV_SUMMARY_CHARS,
     OsvEcosystem,
     OsvScanResult,
     OsvVuln,
@@ -46,7 +48,6 @@ from sec_recon_agent.mcp_server.models import (
     PackageVersionStr,
 )
 from sec_recon_agent.mcp_server.security import fence_untrusted
-from sec_recon_agent.mcp_server.server import mcp
 from sec_recon_agent.observability import get_tracer
 
 log = structlog.get_logger()
@@ -64,7 +65,7 @@ MAX_VULNS_RETURNED = 100
 MAX_ALIASES_RETURNED = 20
 MAX_ALIAS_LEN = 60
 MAX_REFERENCES_RETURNED = 20
-SUMMARY_MAX_CHARS = 1000
+SUMMARY_MAX_CHARS = OSV_SUMMARY_CHARS
 SEVERITY_MAX_CHARS = 120
 
 
@@ -178,7 +179,7 @@ def _parse_vuln(raw: dict[str, Any], package_name: str) -> OsvVuln | None:
     introduced, fixed = _extract_introduced_fixed(raw, package_name)
     return OsvVuln(
         id=vuln_id,
-        summary=fence_untrusted(_extract_summary(raw)),
+        summary=fence_untrusted(_extract_summary(raw), max_chars=SUMMARY_MAX_CHARS),
         aliases=_extract_aliases(raw),
         severity=_extract_severity(raw),
         introduced=introduced,
@@ -227,7 +228,7 @@ async def _osv_query(package_name: str, ecosystem: str, version: str) -> dict[st
     return payload
 
 
-@mcp.tool()
+@declared_tool()
 async def osv_lookup(
     package_name: PackageNameStr,
     ecosystem: OsvEcosystem,

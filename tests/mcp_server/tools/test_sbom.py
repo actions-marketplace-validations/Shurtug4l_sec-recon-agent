@@ -224,3 +224,20 @@ def test_ecosystem_from_purl_never_crashes_and_supported_types_are_valid(
     assert result is None or isinstance(result, str)
     if purl_type in _PURL_TYPE_TO_OSV:
         assert result in _OSV_ECOSYSTEMS
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t"])
+def test_blank_version_reads_as_missing(blank: str) -> None:
+    # A blank version must stay None: "" would pass the gate's _partition and
+    # reach OSV, which reads a versionless query as every version.
+    cyclonedx = {
+        "bomFormat": "CycloneDX",
+        "components": [{"name": "requests", "version": blank, "purl": "pkg:pypi/requests"}],
+    }
+    spdx = {
+        "spdxVersion": "SPDX-2.3",
+        "packages": [{"name": "requests", "versionInfo": blank}],
+    }
+    for payload in (cyclonedx, spdx):
+        result = sbom_ingest(json.dumps(payload))
+        assert [c.version for c in result.components] == [None]

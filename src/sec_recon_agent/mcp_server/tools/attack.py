@@ -16,9 +16,9 @@ from typing import Annotated, Any
 import structlog
 from pydantic import Field
 
+from sec_recon_agent.mcp_server.effects import declared_tool
 from sec_recon_agent.mcp_server.errors import InvalidCweInputError
 from sec_recon_agent.mcp_server.models import AttackMitigation, AttackTechnique
-from sec_recon_agent.mcp_server.server import mcp
 from sec_recon_agent.observability import get_tracer
 
 log = structlog.get_logger()
@@ -95,7 +95,7 @@ def _build_technique(
     )
 
 
-@mcp.tool()
+@declared_tool()
 def attack_mapping(cwe_ids: CweIdList) -> list[AttackTechnique]:
     """Map a set of CWE IDs to MITRE ATT&CK techniques and their mitigations.
 

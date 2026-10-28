@@ -1,12 +1,24 @@
 """MCP server entry point.
 
-This module owns the FastMCP instance. Tool modules import `mcp` from here
-and register handlers via @mcp.tool. main() triggers tool registration via
-side-effect imports, then starts the SSE HTTP transport.
+This module owns the FastMCP instance. Tool modules register through
+`effects.declared_tool`, which wraps `mcp.tool` with annotations derived from
+TOOL_EFFECTS. main() triggers tool registration via side-effect imports, then
+starts the SSE HTTP transport. Never import effects or tools at this module's
+top level: effects imports `mcp` from here.
 
 When `MCP_AUTH_TOKEN` is set, the SSE ASGI app is wrapped in a bearer-token
 gate before being served by uvicorn. When unset, the server runs open
-(legacy behavior, suitable for docker-compose-internal usage only).
+(suitable for docker-compose-internal and loopback usage only). The agent's
+MCP client reads the same setting and presents the token, so one variable
+enables the gate on both ends (agent/triage.py::_mcp_toolset).
+
+DNS-rebinding protection is on regardless of the token. FastMCP enables it
+by itself only when bound to a loopback host; in compose the server binds
+0.0.0.0 so the other container can reach it, which silently left the
+protection off and let a web page that rebinds its own domain to 127.0.0.1
+drive the published :8001 from a visitor's browser. It is therefore enabled
+explicitly, with the Host values legitimate clients send (loopback and the
+compose service name, any port) and no browser Origin allowed at all.
 """
 
 from typing import cast
@@ -14,6 +26,7 @@ from typing import cast
 import structlog
 import uvicorn
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from sec_recon_agent.config import settings
 from sec_recon_agent.mcp_server.auth import ASGIApp, BearerAuthASGI
@@ -25,17 +38,18 @@ mcp = FastMCP(
     "sec-recon",
     host=settings.mcp_server_host,
     port=settings.mcp_server_port,
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=settings.mcp_allowed_hosts_list,
+        # Nothing browser-side is meant to talk to this server: a request
+        # that carries an Origin header at all is refused.
+        allowed_origins=[],
+    ),
 )
 
 
-@mcp.tool()
-def ping() -> str:
-    """Liveness probe; returns 'pong'."""
-    return "pong"
-
-
 def _register_tools() -> None:
-    """Side-effect imports so tool modules execute their @mcp.tool decorators."""
+    """Side-effect imports so tool modules execute their @declared_tool decorators."""
     from sec_recon_agent.mcp_server.tools import (
         attack,  # noqa: F401
         cve,  # noqa: F401
@@ -81,6 +95,7 @@ def main() -> None:
         port=settings.mcp_server_port,
         transport="sse",
         auth=settings.mcp_auth_token is not None,
+        allowed_hosts=settings.mcp_allowed_hosts_list,
     )
     app = build_app()
     config = uvicorn.Config(
@@ -93,4 +108,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # Under `python -m` this file runs as __main__, a second copy whose `mcp`
+    # the tool modules never register on: run the canonical module instead.
+    from sec_recon_agent.mcp_server.server import main as canonical_main
+
+    canonical_main()

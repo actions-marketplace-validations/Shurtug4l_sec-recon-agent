@@ -7,14 +7,21 @@ million tokens, keyed by the exact model identifiers on the backend allowlist
 
 Source: Anthropic published API pricing per tier as of 2026-06-24
 (Haiku 4.5 $1.00 / $5.00, Sonnet tier $3.00 / $15.00, Opus tier $5.00 / $25.00
-per MTok input / output). Update the table and the stamped date if pricing
-moves. Unknown models return None rather than a fabricated cost -- an honest
-"n/a" beats a wrong number on a portfolio scorecard.
+per MTok input / output). Prompt-cache tokens follow Anthropic's published
+multipliers on the input price: a cache write (5-minute TTL) costs 1.25x, a
+cache read 0.1x. pydantic-ai reports them inside `input_tokens`, so they are
+carved out of the total before the plain price applies. Update the table and
+the stamped date if pricing moves. Unknown models return None rather than a
+fabricated cost -- an honest "n/a" beats a wrong number on a portfolio
+scorecard.
 """
 
 from dataclasses import dataclass
 
 PRICING_SOURCE_DATE = "2026-06-24"
+# Multipliers on the input price for prompt-cache tokens (5-minute TTL).
+CACHE_WRITE_MULTIPLIER = 1.25
+CACHE_READ_MULTIPLIER = 0.1
 
 
 @dataclass(frozen=True)
@@ -60,11 +67,19 @@ def estimate_cost_usd(
     model: str,
     input_tokens: int | None,
     output_tokens: int | None,
+    *,
+    cache_read_tokens: int | None = None,
+    cache_write_tokens: int | None = None,
 ) -> float | None:
     """Estimate USD cost for one triage from its token counts.
 
-    Returns None when the model is unpriced or both token counts are missing,
-    so the caller renders "n/a" rather than a misleading $0.00.
+    `input_tokens` is the TOTAL input as pydantic-ai reports it, cache
+    traffic included (on the recorded runs it equals cache reads plus cache
+    writes plus a few dozen uncached tokens). Cache reads and writes are
+    carved out and priced at their multipliers; the remainder is billed at
+    the plain input price. Returns None when the model is unpriced or both
+    primary token counts are missing, so the caller renders "n/a" rather
+    than a misleading $0.00.
     """
     price = price_for(model)
     if price is None:
@@ -73,6 +88,13 @@ def estimate_cost_usd(
         return None
     inp = input_tokens or 0
     out = output_tokens or 0
-    return (inp / 1_000_000) * price.input_usd_per_mtok + (
-        out / 1_000_000
-    ) * price.output_usd_per_mtok
+    reads = cache_read_tokens or 0
+    writes = cache_write_tokens or 0
+    uncached = max(inp - reads - writes, 0)
+    per_input = price.input_usd_per_mtok / 1_000_000
+    return (
+        uncached * per_input
+        + reads * per_input * CACHE_READ_MULTIPLIER
+        + writes * per_input * CACHE_WRITE_MULTIPLIER
+        + (out / 1_000_000) * price.output_usd_per_mtok
+    )

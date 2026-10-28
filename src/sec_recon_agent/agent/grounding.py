@@ -18,16 +18,14 @@ Claim policy, designed to never accuse falsely:
   UNVERIFIABLE instead of UNBACKED.
 
 This module is pure and imports nothing from pydantic-ai: it consumes the
-ToolInvocation records produced by agent/trajectory.py.
+ToolInvocation records produced by agent/trajectory.py, indexed once by
+agent/evidence.py (the same index the SSVC authority reads its signals from,
+so the two server-side stamps can never disagree about what the tools said).
 """
 
-import json
-import re
 from collections.abc import Sequence
-from dataclasses import dataclass, field
 
-from pydantic import TypeAdapter, ValidationError
-
+from sec_recon_agent.agent.evidence import Evidence, build_evidence, mentions_cve
 from sec_recon_agent.agent.schema import (
     CVEReference,
     GroundingAssessment,
@@ -37,108 +35,13 @@ from sec_recon_agent.agent.schema import (
     TriageReport,
 )
 from sec_recon_agent.agent.trajectory import ToolInvocation
-from sec_recon_agent.mcp_server.models import (
-    AttackTechnique,
-    CVECandidate,
-    CVEDetail,
-    EpssScore,
-    EpssStatus,
-    ExploitCheck,
-    KevCheck,
-    OsvScanResult,
-    PatchAvailability,
-)
+from sec_recon_agent.mcp_server.models import EpssStatus
 
 # CVSS scores are reported to one decimal; EPSS models round to a few. Small
 # absolute tolerances absorb representation noise without hiding real drift.
 CVSS_SCORE_TOLERANCE = 0.05
 EPSS_TOLERANCE = 0.01
 MAX_FINDINGS = 40
-
-_CVE_ID_RE = re.compile(r"CVE-\d{4}-\d{4,}", re.IGNORECASE)
-
-_LIST_ATTACK = TypeAdapter(list[AttackTechnique])
-_LIST_CANDIDATES = TypeAdapter(list[CVECandidate])
-
-
-@dataclass
-class _Evidence:
-    """Index of parsed tool returns, built once per verification."""
-
-    cve_details: dict[str, list[CVEDetail]] = field(default_factory=dict)
-    kev: dict[str, list[KevCheck]] = field(default_factory=dict)
-    epss: dict[str, list[EpssScore]] = field(default_factory=dict)
-    exploits: dict[str, list[ExploitCheck]] = field(default_factory=dict)
-    attack_ids: set[str] = field(default_factory=set)
-    mentioned_cve_ids: set[str] = field(default_factory=set)
-    unparsed: dict[str, list[ToolInvocation]] = field(default_factory=dict)
-
-
-def _scan_cve_ids(value: object) -> set[str]:
-    """CVE ids appearing anywhere in a JSON-dumpable structure, normalized."""
-    try:
-        text = json.dumps(value, default=str)
-    except (TypeError, ValueError):
-        text = str(value)
-    return {match.upper() for match in _CVE_ID_RE.findall(text)}
-
-
-def _mentions_cve(invocation: ToolInvocation, cve_id: str) -> bool:
-    return cve_id in _scan_cve_ids(invocation.args) or cve_id in _scan_cve_ids(
-        invocation.content,
-    )
-
-
-def _build_evidence(invocations: Sequence[ToolInvocation]) -> _Evidence:
-    evidence = _Evidence()
-    for invocation in invocations:
-        if invocation.outcome != "success":
-            continue
-        # Tool args are model-authored structured data: a queried CVE id
-        # counts as a mention even when the tool's answer was empty.
-        evidence.mentioned_cve_ids |= _scan_cve_ids(invocation.args)
-        try:
-            _index_content(evidence, invocation)
-        except (ValidationError, TypeError, ValueError):
-            evidence.unparsed.setdefault(invocation.tool_name, []).append(invocation)
-    return evidence
-
-
-def _index_content(evidence: _Evidence, invocation: ToolInvocation) -> None:
-    """Parse one successful return into the typed index. Raises on mismatch."""
-    content = invocation.content
-    tool = invocation.tool_name
-    if tool == "cve_lookup":
-        detail = CVEDetail.model_validate(content)
-        evidence.cve_details.setdefault(detail.cve_id.upper(), []).append(detail)
-        evidence.mentioned_cve_ids.add(detail.cve_id.upper())
-    elif tool == "kev_check":
-        kev = KevCheck.model_validate(content)
-        evidence.kev.setdefault(kev.cve_id.upper(), []).append(kev)
-        evidence.mentioned_cve_ids.add(kev.cve_id.upper())
-    elif tool == "epss_score":
-        epss = EpssScore.model_validate(content)
-        evidence.epss.setdefault(epss.cve_id.upper(), []).append(epss)
-        evidence.mentioned_cve_ids.add(epss.cve_id.upper())
-    elif tool == "exploit_check":
-        exploit = ExploitCheck.model_validate(content)
-        evidence.exploits.setdefault(exploit.cve_id.upper(), []).append(exploit)
-        evidence.mentioned_cve_ids.add(exploit.cve_id.upper())
-    elif tool == "patch_lookup":
-        patch = PatchAvailability.model_validate(content)
-        evidence.mentioned_cve_ids.add(patch.cve_id.upper())
-    elif tool == "osv_lookup":
-        osv = OsvScanResult.model_validate(content)
-        for vuln in osv.vulnerabilities:
-            evidence.mentioned_cve_ids |= _scan_cve_ids(vuln.id)
-            evidence.mentioned_cve_ids |= _scan_cve_ids(vuln.aliases)
-    elif tool == "attack_mapping":
-        techniques = _LIST_ATTACK.validate_python(content)
-        evidence.attack_ids |= {technique.id for technique in techniques}
-    elif tool == "cve_semantic_search":
-        candidates = _LIST_CANDIDATES.validate_python(content)
-        evidence.mentioned_cve_ids |= {c.cve_id.upper() for c in candidates}
-    # nmap_parse_xml / sbom_ingest carry no report-claim evidence: skip.
 
 
 class _Collector:
@@ -185,14 +88,14 @@ class _Collector:
 
 
 def _absence_status(
-    evidence: _Evidence,
+    evidence: Evidence,
     tool: str,
     cve_id: str,
 ) -> GroundingClaimStatus:
     """UNVERIFIABLE when an unparseable success from `tool` mentions the CVE
     (evidence may exist, we just cannot read it); UNBACKED otherwise."""
     for invocation in evidence.unparsed.get(tool, []):
-        if _mentions_cve(invocation, cve_id):
+        if mentions_cve(invocation, cve_id):
             return GroundingClaimStatus.UNVERIFIABLE
     return GroundingClaimStatus.UNBACKED
 
@@ -210,7 +113,7 @@ def verify_grounding(
     if invocations is None:
         return GroundingAssessment(status=GroundingStatus.NOT_EVALUATED)
 
-    evidence = _build_evidence(invocations)
+    evidence = build_evidence(invocations)
     collector = _Collector()
 
     for cve in report.cves:
@@ -237,7 +140,7 @@ def verify_grounding(
     return collector.assessment()
 
 
-def _check_cve(collector: _Collector, evidence: _Evidence, cve: CVEReference) -> None:
+def _check_cve(collector: _Collector, evidence: Evidence, cve: CVEReference) -> None:
     cve_id = cve.cve_id.upper()
 
     # Identity first: a CVE id no tool was asked about and no tool returned is
@@ -245,7 +148,7 @@ def _check_cve(collector: _Collector, evidence: _Evidence, cve: CVEReference) ->
     if cve_id not in evidence.mentioned_cve_ids:
         status = GroundingClaimStatus.UNBACKED
         for unparsed in evidence.unparsed.values():
-            if any(_mentions_cve(inv, cve_id) for inv in unparsed):
+            if any(mentions_cve(inv, cve_id) for inv in unparsed):
                 status = GroundingClaimStatus.UNVERIFIABLE
                 break
         collector.record(
@@ -258,15 +161,7 @@ def _check_cve(collector: _Collector, evidence: _Evidence, cve: CVEReference) ->
     collector.record(cve_id, "cve_id", GroundingClaimStatus.SUPPORTED)
 
     _check_cvss(collector, evidence, cve_id, cve.cvss_v3_score)
-    _check_bool_signal(
-        collector,
-        cve_id,
-        "exploits_public",
-        cve.exploits_public,
-        [e.has_public_exploit for e in evidence.exploits.get(cve_id, [])],
-        evidence,
-        tool="exploit_check",
-    )
+    _check_exploit_signal(collector, evidence, cve_id, cve.exploits_public)
     _check_bool_signal(
         collector,
         cve_id,
@@ -284,7 +179,7 @@ def _check_cve(collector: _Collector, evidence: _Evidence, cve: CVEReference) ->
 
 def _check_cvss(
     collector: _Collector,
-    evidence: _Evidence,
+    evidence: Evidence,
     cve_id: str,
     claimed: float | None,
 ) -> None:
@@ -311,13 +206,49 @@ def _check_cvss(
         )
 
 
+def _check_exploit_signal(
+    collector: _Collector,
+    evidence: Evidence,
+    cve_id: str,
+    claimed: bool,
+) -> None:
+    """exploits_public, with the per-source statuses honoured.
+
+    A return whose sources all answered is evidence either way. A return with
+    a source in ERROR and nothing accepted is inconclusive: it cannot back a
+    positive claim, and it must not be read as contradicting one either, so
+    a positive claim over such returns degrades to UNVERIFIABLE.
+    """
+    entries = evidence.exploits.get(cve_id, [])
+    observed = [
+        e.has_public_exploit for e in entries if e.has_public_exploit or e.arms_conclusive()
+    ]
+    if not observed and claimed and entries:
+        collector.record(
+            cve_id,
+            "exploits_public",
+            GroundingClaimStatus.UNVERIFIABLE,
+            "exploit_check could not conclude: a source was in error",
+        )
+        return
+    _check_bool_signal(
+        collector,
+        cve_id,
+        "exploits_public",
+        claimed,
+        observed,
+        evidence,
+        tool="exploit_check",
+    )
+
+
 def _check_bool_signal(
     collector: _Collector,
     cve_id: str,
     claim_field: str,
     claimed: bool,
     observed: list[bool],
-    evidence: _Evidence,
+    evidence: Evidence,
     *,
     tool: str,
 ) -> None:
@@ -347,7 +278,7 @@ def _check_bool_signal(
 
 def _check_kev_due_date(
     collector: _Collector,
-    evidence: _Evidence,
+    evidence: Evidence,
     cve_id: str,
     claimed: str | None,
 ) -> None:
@@ -375,7 +306,7 @@ def _check_kev_due_date(
 
 def _check_ransomware(
     collector: _Collector,
-    evidence: _Evidence,
+    evidence: Evidence,
     cve_id: str,
     claimed: bool | None,
 ) -> None:
@@ -408,7 +339,7 @@ def _check_ransomware(
 
 def _check_epss(
     collector: _Collector,
-    evidence: _Evidence,
+    evidence: Evidence,
     cve_id: str,
     claim_field: str,
     claimed: float | None,

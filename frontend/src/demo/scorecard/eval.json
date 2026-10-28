@@ -16,11 +16,13 @@
       "ransomware_ok": true,
       "notes": []
     },
-    "elapsed_seconds": 78.97467695898376,
+    "elapsed_seconds": 43.210786792013096,
     "usage": {
-      "input_tokens": 63768,
-      "output_tokens": 4969,
-      "cost_usd": 0.26583900000000005
+      "input_tokens": 51478,
+      "output_tokens": 2732,
+      "cache_read_tokens": 45173,
+      "cache_write_tokens": 6238,
+      "cost_usd": 0.07812540000000001
     },
     "conformant": true
   },
@@ -41,11 +43,13 @@
       "ransomware_ok": true,
       "notes": []
     },
-    "elapsed_seconds": 41.963452665979275,
+    "elapsed_seconds": 31.204503832996124,
     "usage": {
-      "input_tokens": 42002,
-      "output_tokens": 2465,
-      "cost_usd": 0.16298100000000001
+      "input_tokens": 33534,
+      "output_tokens": 1398,
+      "cache_read_tokens": 30975,
+      "cache_write_tokens": 2508,
+      "cost_usd": 0.039820499999999995
     },
     "conformant": true
   },
@@ -55,7 +59,7 @@
     "model": "sonnet",
     "expected_severity": "critical",
     "expected_in_kev": true,
-    "severity": "critical",
+    "severity": "high",
     "confidence": "high",
     "verdict": {
       "case_id": "eternalblue-smbv1",
@@ -66,11 +70,13 @@
       "ransomware_ok": true,
       "notes": []
     },
-    "elapsed_seconds": 93.80733354197582,
+    "elapsed_seconds": 52.846164916991256,
     "usage": {
-      "input_tokens": 90716,
-      "output_tokens": 6643,
-      "cost_usd": 0.371793
+      "input_tokens": 69146,
+      "output_tokens": 3253,
+      "cache_read_tokens": 61090,
+      "cache_write_tokens": 7973,
+      "cost_usd": 0.09726974999999999
     },
     "conformant": true
   },
@@ -91,11 +97,13 @@
       "ransomware_ok": true,
       "notes": []
     },
-    "elapsed_seconds": 94.52624274999835,
+    "elapsed_seconds": 40.38911179199931,
     "usage": {
-      "input_tokens": 113864,
-      "output_tokens": 6686,
-      "cost_usd": 0.441882
+      "input_tokens": 54056,
+      "output_tokens": 2468,
+      "cache_read_tokens": 44662,
+      "cache_write_tokens": 9327,
+      "cost_usd": 0.08559585
     },
     "conformant": true
   },
@@ -116,11 +124,13 @@
       "ransomware_ok": true,
       "notes": []
     },
-    "elapsed_seconds": 63.93576300001587,
+    "elapsed_seconds": 39.985464083001716,
     "usage": {
-      "input_tokens": 60703,
-      "output_tokens": 4143,
-      "cost_usd": 0.244254
+      "input_tokens": 50543,
+      "output_tokens": 2179,
+      "cache_read_tokens": 44599,
+      "cache_write_tokens": 5877,
+      "cost_usd": 0.06830445
     },
     "conformant": true
   },
@@ -141,11 +151,13 @@
       "ransomware_ok": true,
       "notes": []
     },
-    "elapsed_seconds": 43.77735533300438,
+    "elapsed_seconds": 32.7048650420038,
     "usage": {
-      "input_tokens": 45528,
-      "output_tokens": 2612,
-      "cost_usd": 0.17576399999999998
+      "input_tokens": 35707,
+      "output_tokens": 1539,
+      "cache_read_tokens": 31893,
+      "cache_write_tokens": 3763,
+      "cost_usd": 0.046917150000000005
     },
     "conformant": true
   },
@@ -166,11 +178,13 @@
       "ransomware_ok": true,
       "notes": []
     },
-    "elapsed_seconds": 60.31263366699568,
+    "elapsed_seconds": 36.31403100001626,
     "usage": {
-      "input_tokens": 60083,
-      "output_tokens": 3549,
-      "cost_usd": 0.233484
+      "input_tokens": 50312,
+      "output_tokens": 1936,
+      "cache_read_tokens": 44530,
+      "cache_write_tokens": 5715,
+      "cost_usd": 0.06403125
     },
     "conformant": true
   },
@@ -191,11 +205,13 @@
       "ransomware_ok": true,
       "notes": []
     },
-    "elapsed_seconds": 83.66128595898044,
+    "elapsed_seconds": 67.17688487499254,
     "usage": {
-      "input_tokens": 77176,
-      "output_tokens": 5488,
-      "cost_usd": 0.313848
+      "input_tokens": 80709,
+      "output_tokens": 2854,
+      "cache_read_tokens": 68320,
+      "cache_write_tokens": 12306,
+      "cost_usd": 0.1097025
     },
     "conformant": true
   },
@@ -216,11 +232,13 @@
       "ransomware_ok": true,
       "notes": []
     },
-    "elapsed_seconds": 13.002820583002176,
+    "elapsed_seconds": 12.52107916699606,
     "usage": {
-      "input_tokens": 16762,
-      "output_tokens": 454,
-      "cost_usd": 0.057095999999999994
+      "input_tokens": 20162,
+      "output_tokens": 450,
+      "cache_read_tokens": 19609,
+      "cache_write_tokens": 518,
+      "cost_usd": 0.014680200000000001
     },
     "conformant": true
   },
@@ -241,11 +259,13 @@
       "ransomware_ok": true,
       "notes": []
     },
-    "elapsed_seconds": 156.57621595798992,
+    "elapsed_seconds": 71.92955820899806,
     "usage": {
-      "input_tokens": 138953,
-      "output_tokens": 7470,
-      "cost_usd": 0.528909
+      "input_tokens": 122287,
+      "output_tokens": 4414,
+      "cache_read_tokens": 104149,
+      "cache_write_tokens": 18023,
+      "cost_usd": 0.16538595
     },
     "conformant": true
   },
@@ -266,11 +286,13 @@
       "ransomware_ok": true,
       "notes": []
     },
-    "elapsed_seconds": 73.12466770800529,
+    "elapsed_seconds": 53.99636341701262,
     "usage": {
-      "input_tokens": 70676,
-      "output_tokens": 5081,
-      "cost_usd": 0.28824299999999997
+      "input_tokens": 61865,
+      "output_tokens": 3597,
+      "cache_read_tokens": 55855,
+      "cache_write_tokens": 5927,
+      "cost_usd": 0.09318675
     },
     "conformant": true
   }

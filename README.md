@@ -10,7 +10,7 @@
 **An LLM vulnerability-triage agent designed the way an AI Solutions Architect would build it and an AI Security Engineer would attack it.** Built on Pydantic AI + a custom Model Context Protocol (MCP) server, behind a Next.js frontend.
 
 - **Grounded** - every answer is built from live authoritative feeds (NVD, CISA KEV, FIRST EPSS, OSV.dev, Exploit-DB) through ten typed MCP tools, into a schema-bounded `TriageReport`.
-- **Deterministic where it matters** - the prioritization verdict (SSVC) is computed server-side from the collected signals and stamped onto the report, never LLM-guessed.
+- **Deterministic where it matters** - the prioritization verdict (SSVC) is computed server-side from the signals the tools returned, read from the run's own trajectory rather than from the fields the model wrote, and stamped onto the report with its evidence basis, never LLM-guessed.
 - **Verified, not just instructed** - after every run a server-side verifier re-checks each tool-derived claim in the report against what the tools actually returned.
 - **Adversary-aware** - the untrusted-data boundary is a first-class design concern, exercised by a falsifiable 18-payload red-team battery and sealed into a hash-chained audit trail.
 
@@ -46,7 +46,7 @@ Three processes, one trust design: the browser only ever sees `:3000` (no CORS o
 
 ## The verdict is deterministic
 
-Prioritization follows SSVC (Stakeholder-Specific Vulnerability Categorization, CISA's decision framework), a four-step urgency ladder: **Act / Attend / Track\* / Track**, where Track\* is Track with closer monitoring. The verdict is a pure server-side function (`agent/ssvc.py`) of the signals the tools collected - same signals in, same verdict out. The LLM echoes the decision in prose; it cannot change it.
+Prioritization follows SSVC (Stakeholder-Specific Vulnerability Categorization, CISA's decision framework), a four-step urgency ladder: **Act / Attend / Track\* / Track**, where Track\* is Track with closer monitoring. The verdict is a pure server-side function (`agent/ssvc.py`) of the signals read from the tool returns captured in the run's trajectory, not from the fields the model wrote: same tool returns in, same verdict out. Where a signal has no usable tool evidence (a feed the model never called, or one that failed), the verdict falls back to the report for that signal and says so on the record (`basis: mixed`, each fallback named in `unverified_signals`); with no trajectory at all it is stamped `basis: report`. The LLM echoes the decision in prose; it cannot change it, and it cannot pass a verdict on its own word off as one on the tools' word.
 
 ```mermaid
 flowchart TD
@@ -133,7 +133,7 @@ Each tool has a typed Pydantic contract: validated input, typed result model, ty
 |---|---|---|
 | `cve_lookup` | NVD CVE 2.0 API | `CVEDetail`: CVSS v3, severity, CWEs, affected CPEs, references |
 | `cve_semantic_search` | local ChromaDB index | ranked `CVECandidate` hits for fuzzy descriptions (hybrid dense + BM25, RRF-fused) |
-| `exploit_check` | Exploit-DB CSV + GitHub code search | `ExploitCheck`: public-PoC availability |
+| `exploit_check` | Exploit-DB CSV + GitHub code search, corroborated | `ExploitCheck`: public-PoC availability with a status per source |
 | `kev_check` | CISA KEV catalog | `KevCheck`: exploited-in-the-wild, remediation deadline, ransomware flag |
 | `epss_score` | FIRST.org EPSS API | `EpssScore`: 30-day exploitation probability + percentile |
 | `patch_lookup` | NVD CPE configurations | `PatchAvailability`: fixed-in versions per affected product |
@@ -155,7 +155,7 @@ The system prompt encodes one prioritization heuristic: CISA KEV membership > kn
 The gate ships as a composite GitHub Action at the repo root, and this repository dogfoods it: `ci-sbom-gate.yml` scans the project's own dependency tree on dependency changes and a weekly cron, uploads SARIF to the Security tab, and attests the SBOM + gate report on non-PR runs.
 
 ```yaml
-- uses: Shurtug4l/sec-recon-agent@v0.1.1
+- uses: Shurtug4l/sec-recon-agent@v0.1.4
   with:
     sbom-path: sbom.cdx.json
     fail-on: act
@@ -184,7 +184,7 @@ What CI does gate on is the **record-replay harness**: committed cassettes (`tes
 Every HIGH finding from an independent security review is mapped to the code change that addressed it in [docs/design.md](docs/design.md#threat-model), including a diagram of where each control sits on the untrusted-data path. Highlights:
 
 - **Strict typing at the model boundary** - every tool I/O is a Pydantic model; `mypy --strict` enforced.
-- **Untrusted-content fencing** - every free-text vendor field is wrapped with `<UNTRUSTED_CONTENT>` markers at the code boundary (`mcp_server/security.py`); the system prompt instructs the LLM to treat fenced content as data, never as instructions.
+- **Untrusted-content fencing** - every free-text vendor field is wrapped with `<UNTRUSTED_CONTENT id="...">` markers at the code boundary (`mcp_server/security.py`), the id is random per server process so a forged closing tag cannot match, marker-shaped tokens inside the payload are neutralized, and the system prompt names the markers and instructs the LLM to treat fenced content as data, never as instructions.
 - **XXE-safe XML parsing** - `defusedxml` with explicit `forbid_dtd=True`, tested against classic, external-DTD, parameter-entity, and billion-laughs payloads.
 - **Bounded resource consumption** - every input crossing the MCP boundary is double-capped (schema `max_length` + runtime pre-flight); outbound feeds are host-locked with size caps and post-redirect host checks.
 - **Error-payload allowlist** - the SSE `error` event surfaces a generic message unless the exception type is explicitly allowlisted; internal messages never leak to the client.
@@ -197,7 +197,7 @@ Every HIGH finding from an independent security review is mapped to the code cha
 
 ## Testing
 
-**571 tests (568 fast + 3 slow ChromaDB round-trip tests, excluded from the fast run)**, all network-mocked, no LLM billing. Coverage on the fast suite holds at ~90% with a soft 70% floor. CI matrix-tests Python 3.12, 3.13 and 3.14 - the last one because the runtime images are built on `python:3.14-slim`, so the interpreter that ships is one the suite actually runs on.
+**693 tests (690 fast + 3 slow ChromaDB round-trip tests, excluded from the fast run)**, all network-mocked, no LLM billing. Coverage on the fast suite holds at ~90% with a soft 70% floor. CI matrix-tests Python 3.12, 3.13 and 3.14 - the last one because the runtime images are built on `python:3.14-slim`, so the interpreter that ships is one the suite actually runs on.
 
 ```bash
 make test                        # full suite (includes the 3 slow tests)

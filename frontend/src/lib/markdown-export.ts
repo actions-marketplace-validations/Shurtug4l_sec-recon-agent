@@ -92,16 +92,25 @@ function renderTechnique(t: AttackTechnique): string {
   return lines.join("\n");
 }
 
-function renderSsvc(ssvc: SsvcAssessment): string {
+function renderSsvc(ssvc: SsvcAssessment, shared: boolean): string {
   const lines: string[] = [];
   lines.push("## SSVC verdict");
   lines.push("");
-  lines.push("_Deterministic prioritization, computed server-side from the collected signals (not the LLM)._");
+  lines.push(
+    shared
+      ? "_As written in the shared link: a claim, not a verdict this site computed._"
+      : "_Deterministic prioritization, computed server-side from the collected signals (not the LLM)._",
+  );
   lines.push("");
   lines.push(`- **Decision**: ${ssvc.decision}`);
   lines.push(`- **Rule**: \`${ssvc.rule}\``);
   if (ssvc.driving_cve) {
     lines.push(`- **Driving CVE**: ${ssvc.driving_cve}`);
+  }
+  if (ssvc.basis && ssvc.basis !== "evidence") {
+    const unverified = ssvc.unverified_signals ?? [];
+    const suffix = unverified.length > 0 ? ` (unverified: ${unverified.join(", ")})` : "";
+    lines.push(`- **Basis**: ${ssvc.basis}${suffix}`);
   }
   lines.push("");
   lines.push(ssvc.rationale);
@@ -122,12 +131,14 @@ function renderCoverage(coverage: FeedStatus[]): string {
   return lines.join("\n");
 }
 
-function renderGrounding(g: GroundingAssessment): string {
+function renderGrounding(g: GroundingAssessment, shared: boolean): string {
   const lines: string[] = [];
   lines.push("## Grounding verification");
   lines.push("");
   lines.push(
-    "_Deterministic post-run check: every tool-derived claim re-verified server-side against the tool results captured from the run (not the model's self-assessment)._",
+    shared
+      ? "_As written in the shared link: this site cannot re-run the check, so every status below is a claim._"
+      : "_Deterministic post-run check: every tool-derived claim re-verified server-side against the tool results captured from the run (not the model's self-assessment)._",
   );
   lines.push("");
   lines.push(`- **Status**: ${g.status}`);
@@ -154,7 +165,7 @@ function renderGrounding(g: GroundingAssessment): string {
   return lines.join("\n");
 }
 
-function renderProvenance(): string {
+function renderProvenance(shared: boolean): string {
   const lines: string[] = [];
   lines.push("## Provenance");
   lines.push("");
@@ -171,21 +182,36 @@ function renderProvenance(): string {
   );
   lines.push("");
   lines.push(
-    "A prompt injection that fully persuades the model still cannot move the verdict from Act to Track: the model does not hold that pen, the deterministic lane does.",
+    shared
+      ? "These lanes describe a live run. This report came from a shared link, so none of them can be checked: whoever wrote the link held every pen, the deterministic lane included."
+      : "A prompt injection that fully persuades the model still cannot move the verdict from Act to Track: the model does not hold that pen, the deterministic lane does.",
   );
   lines.push("");
   return lines.join("\n");
 }
 
-export function reportToMarkdown(report: TriageReport, query?: string): string {
+// `shared`: the report came from a /r permalink. The export then says so up
+// front and swaps every "deterministic, server-computed" line for a claim,
+// so a forged link cannot be laundered into an authoritative-looking file.
+export function reportToMarkdown(
+  report: TriageReport,
+  query?: string,
+  { shared = false }: { shared?: boolean } = {},
+): string {
   const now = new Date().toISOString().replace(/T.*/, "");
   const lines: string[] = [];
 
   lines.push("# Triage report");
   lines.push("");
+  if (shared) {
+    lines.push(
+      "> **Unverified content.** Exported from a shared sec-recon-agent link. Anyone can write one; the SSVC verdict and the grounding assessment below are claims made by the link, not results this site computed.",
+    );
+    lines.push("");
+  }
   lines.push(`- **Severity**: ${report.severity}`);
   lines.push(`- **Confidence**: ${report.confidence}`);
-  lines.push(`- **Generated**: ${now}`);
+  lines.push(`- **${shared ? "Exported" : "Generated"}**: ${now}`);
   if (query) {
     const oneLineQuery = query.length > 200 ? query.slice(0, 200) + "..." : query;
     lines.push(`- **Query**: \`${oneLineQuery.replace(/`/g, "\\`")}\``);
@@ -193,7 +219,7 @@ export function reportToMarkdown(report: TriageReport, query?: string): string {
   lines.push("");
 
   if (report.ssvc) {
-    lines.push(renderSsvc(report.ssvc));
+    lines.push(renderSsvc(report.ssvc, shared));
   }
 
   lines.push("## Summary");
@@ -227,10 +253,10 @@ export function reportToMarkdown(report: TriageReport, query?: string): string {
   }
 
   if (report.grounding) {
-    lines.push(renderGrounding(report.grounding));
+    lines.push(renderGrounding(report.grounding, shared));
   }
 
-  lines.push(renderProvenance());
+  lines.push(renderProvenance(shared));
 
   if (report.reasoning_chain.length > 0) {
     lines.push(`## Reasoning chain (${report.reasoning_chain.length} steps)`);
@@ -243,7 +269,11 @@ export function reportToMarkdown(report: TriageReport, query?: string): string {
 
   lines.push("---");
   lines.push("");
-  lines.push("_Generated by sec-recon-agent._");
+  lines.push(
+    shared
+      ? "_Exported from a shared sec-recon-agent link; content not verified._"
+      : "_Generated by sec-recon-agent._",
+  );
   lines.push("");
 
   return lines.join("\n");

@@ -25,24 +25,25 @@ import json
 import sys
 import time
 import urllib.request
+from typing import Any
 
 API = "http://localhost:8000/v1/triage"
 DEFAULT_OUT = "frontend/src/demo/fixtures"
 
 
-def capture_frames(query: str, model: str | None) -> tuple[list[dict], int]:
-    body: dict = {"query": query}
+def capture_frames(query: str, model: str | None) -> tuple[list[dict[str, Any]], int]:
+    body: dict[str, Any] = {"query": query}
     if model:
         body["model"] = model
-    req = urllib.request.Request(  # noqa: S310 - fixed localhost dev endpoint
+    req = urllib.request.Request(
         API,
         data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
         method="POST",
     )
-    frames: list[dict] = []
+    frames: list[dict[str, Any]] = []
     start = time.monotonic()
-    with urllib.request.urlopen(req, timeout=300) as resp:  # noqa: S310 - localhost only
+    with urllib.request.urlopen(req, timeout=300) as resp:
         buf = ""
         for chunk in resp:
             buf += chunk.decode("utf-8", errors="replace")

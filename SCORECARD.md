@@ -3,23 +3,23 @@
 Single reproducible measurement of the system across security posture, detection quality, retrieval, efficiency, and reliability. Regenerate with `make scorecard` (see [Reproduce](#reproduce)). Live metrics are populated from the eval / retrieval / red-team result JSONs; a _pending live run_ marker means that run has not been captured yet.
 
 - **Model**: `sonnet`
-- **Date**: 2026-07-08
-- **Commit**: `cca5b70`
+- **Date**: 2026-09-22
+- **Commit**: `feea11f`
 - **Token pricing**: Anthropic published rates as of 2026-06-24
 
 ## Security posture (red-team resistance)
 
 Prompt-injection battery: **18 payloads** across 6 categories, each mapped to MITRE ATLAS techniques. Resistance = the agent held the boundary on every falsifiable check for the payload.
 
-**Resistance: 15/18 (83%)**
+**Resistance: 17/18 (94%)**
 
 | ATLAS technique | Payloads | Resisted |
 |---|---:|---:|
-| AML.T0024 (Exfiltration via ML Inference API) | 3 | 2/3 (67%) |
-| AML.T0029 (Discover ML Model Family) | 2 | 2/2 (100%) |
-| AML.T0040 (LLM Prompt Injection) | 10 | 8/10 (80%) |
+| AML.T0051.000 (LLM Prompt Injection: Direct) | 10 | 9/10 (90%) |
+| AML.T0051.001 (LLM Prompt Injection: Indirect) | 3 | 3/3 (100%) |
 | AML.T0054 (LLM Jailbreak) | 2 | 2/2 (100%) |
-| AML.T0055 (Unsafe Plugin Output Handling) | 6 | 5/6 (83%) |
+| AML.T0056 (Extract LLM System Prompt) | 2 | 2/2 (100%) |
+| AML.T0057 (LLM Data Leakage) | 1 | 1/1 (100%) |
 
 _A payload can exercise more than one technique, so the payload column sums past the battery size._
 
@@ -43,9 +43,9 @@ _MRR = mean reciprocal rank of the expected CVE (1.0 = always ranked first); hit
 
 ## Efficiency (cost & latency)
 
-- **Latency p50 / p95**: 73.1s / 125.6s
-- **Mean tokens (in / out)**: 70930 / 4505
-- **Cost**: total $3.0841, mean $0.2804/triage
+- **Latency p50 / p95**: 40.4s / 69.6s
+- **Mean tokens (in / out)**: 57254 / 2438 (input is the total pydantic-ai reports, prompt-cache reads and writes included; the cost line prices cache traffic at its multipliers)
+- **Cost**: total $0.8630, mean $0.0785/triage
 
 ## Reliability (conformance & calibration)
 
@@ -56,9 +56,9 @@ _MRR = mean reciprocal rank of the expected CVE (1.0 = always ranked first); hit
 
 Every triage is stamped with a grounding verdict: the server re-checks each tool-derived claim in the report (CVSS, KEV, EPSS, exploit flags, ATT&CK ids) against the tool returns captured from the run's own message history. The numbers below aggregate the committed replay cassettes (`tests/cassettes/`): frozen real trajectories that CI replays through the current deterministic pipeline on every PR, hard-failing when the system prompt or a tool schema drifts from what the recorded model saw.
 
-- **Cassettes**: 11 (model `claude-sonnet-4-6`, recorded 2026-07-08, surface `c87d096b0e8e`)
+- **Cassettes**: 11 (model `claude-sonnet-4-6`, recorded 2026-09-22, surface `2882c021c561`)
 - **Reports grounded**: 11/11
-- **Claims checked**: 150 (supported 150, unbacked 0, mismatched 0, unverifiable 0)
+- **Claims checked**: 161 (supported 161, unbacked 0, mismatched 0, unverifiable 0)
 
 ## Prioritization (deterministic SSVC)
 

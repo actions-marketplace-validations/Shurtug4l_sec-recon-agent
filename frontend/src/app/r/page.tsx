@@ -105,7 +105,10 @@ export default function SharedReportPage() {
                 </p>
               </div>
             )}
-            <TriageReportView report={shared.report} query={shared.query} />
+            {/* Anyone can mint a permalink with any content: shared mode opens
+                the report with an "unverified" note (kept in print) and shows
+                the verdict and grounding as claims, not as checks. */}
+            <TriageReportView report={shared.report} query={shared.query} shared />
           </div>
         )}
       </main>

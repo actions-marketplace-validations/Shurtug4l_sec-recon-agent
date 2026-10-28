@@ -71,7 +71,16 @@ def _print_efficiency_and_quality(
     per_case_costs = [
         c
         for r in results
-        if (c := estimate_cost_usd(model_label, r.input_tokens, r.output_tokens)) is not None
+        if (
+            c := estimate_cost_usd(
+                model_label,
+                r.input_tokens,
+                r.output_tokens,
+                cache_read_tokens=r.cache_read_tokens,
+                cache_write_tokens=r.cache_write_tokens,
+            )
+        )
+        is not None
     ]
     total_cost = sum(per_case_costs) if per_case_costs else None
 
@@ -279,7 +288,15 @@ def _run_single(
         usage = {
             "input_tokens": result.input_tokens,
             "output_tokens": result.output_tokens,
-            "cost_usd": estimate_cost_usd(label, result.input_tokens, result.output_tokens),
+            "cache_read_tokens": result.cache_read_tokens,
+            "cache_write_tokens": result.cache_write_tokens,
+            "cost_usd": estimate_cost_usd(
+                label,
+                result.input_tokens,
+                result.output_tokens,
+                cache_read_tokens=result.cache_read_tokens,
+                cache_write_tokens=result.cache_write_tokens,
+            ),
         }
         if result.report is None:
             all_verdicts.append(None)
@@ -350,7 +367,13 @@ def _run_comparison(
                 model=model,
             )
             model_results.append(result)
-            cost = estimate_cost_usd(model, result.input_tokens, result.output_tokens)
+            cost = estimate_cost_usd(
+                model,
+                result.input_tokens,
+                result.output_tokens,
+                cache_read_tokens=result.cache_read_tokens,
+                cache_write_tokens=result.cache_write_tokens,
+            )
             if result.report is None:
                 model_verdicts.append(None)
                 rows.append(

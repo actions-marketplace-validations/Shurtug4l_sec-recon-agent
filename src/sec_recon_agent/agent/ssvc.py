@@ -1,4 +1,4 @@
-"""Deterministic SSVC prioritization over the signals the agent collects.
+"""Deterministic SSVC prioritization over the signals the tools returned.
 
 SSVC (Stakeholder-Specific Vulnerability Categorization) is CISA's methodology
 for turning vulnerability signals into a remediation-urgency decision, replacing
@@ -12,6 +12,17 @@ Why this lives here and not in the LLM:
     runs. A deterministic function over the collected signals is reproducible,
     auditable, and testable. The LLM's job is to gather the grounded signals and
     to *echo* the resulting decision in prose; this function is the authority.
+
+Why the signals come from the trajectory, not from the report:
+    A verdict computed from the fields the model wrote is deterministic *given
+    those fields*, but the fields traverse the model. An injection (or plain
+    transcription drift) that flips `in_kev_catalog` in the report would flip
+    Act to Track while the function stays "pure". So `assess_ssvc` reads each
+    signal from the typed tool returns captured in the run (the same evidence
+    index the grounding verifier uses) and consults the report only where no
+    usable tool evidence exists for that signal, naming every such fallback on
+    the verdict (`basis`, `unverified_signals`). The SBOM gate feeds typed tool
+    results directly through `assess_from_signals` and never falls back.
 
 Faithfulness to CISA SSVC (honest scope):
     CISA's decision tree has four points: Exploitation (none / PoC / active),
@@ -33,15 +44,22 @@ risk; the audit trail's high_epss_hits uses the same 0.5 cut).
 """
 
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
+from sec_recon_agent.agent.evidence import Evidence, build_evidence
 from sec_recon_agent.agent.schema import (
     CVEReference,
     Severity,
     SsvcAssessment,
+    SsvcBasis,
     SsvcDecision,
 )
+from sec_recon_agent.mcp_server.models import EpssStatus
+
+if TYPE_CHECKING:
+    from sec_recon_agent.agent.trajectory import ToolInvocation
 
 # EPSS probability at or above which forward-looking exploitation risk is treated
 # as high (matches the system-prompt heuristic and the audit high_epss cut).
@@ -67,6 +85,36 @@ _ELEVATED_SEVERITIES: frozenset[Severity] = frozenset(
     {Severity.CRITICAL, Severity.HIGH},
 )
 
+# NVD qualitative bands (CVSS v3/v4 spec): 9.0+ critical, 7.0-8.9 high,
+# 4.0-6.9 medium, 0.1-3.9 low. A computed 0.0 maps to INFO: evaluated, no
+# impact - distinct from None, which means "no usable severity data at all".
+_CVSS_BANDS: tuple[tuple[float, Severity], ...] = (
+    (9.0, Severity.CRITICAL),
+    (7.0, Severity.HIGH),
+    (4.0, Severity.MEDIUM),
+    (0.1, Severity.LOW),
+)
+
+# Names of the per-CVE signals the verdict can fall back to the report for.
+# Recorded on the assessment as "<CVE-ID>:<name>" so a consumer can see which
+# input rests on the model's word instead of a tool return.
+SIGNAL_KEV = "kev"  # in_kev_catalog + known_ransomware_use (one feed)
+SIGNAL_EXPLOIT = "exploit"
+SIGNAL_EPSS = "epss"  # probability + percentile (one feed)
+SIGNAL_SEVERITY = "severity"
+
+
+def band_for_score(score: float) -> Severity:
+    """NVD qualitative severity band for a CVSS base score.
+
+    Shared by the evidence-derived severity signal below and the SBOM gate's
+    OSV severity parsing (gate/severity.py), so both paths band identically.
+    """
+    for cut, severity in _CVSS_BANDS:
+        if score >= cut:
+            return severity
+    return Severity.INFO
+
 
 @dataclass(frozen=True)
 class SsvcSignals:
@@ -82,6 +130,14 @@ class SsvcSignals:
     epss_probability: float | None
     epss_percentile: float | None
     severity: Severity | None
+
+
+@dataclass(frozen=True)
+class DerivedSignals:
+    """Signals for one CVE plus the names of those taken from the report."""
+
+    signals: SsvcSignals
+    unverified: tuple[str, ...]
 
 
 def _epss_high(sig: SsvcSignals) -> bool:
@@ -131,7 +187,8 @@ def decide_for_signals(sig: SsvcSignals) -> tuple[SsvcDecision, str]:
     return SsvcDecision.TRACK, "baseline"
 
 
-def _signals_from_cve(cve: CVEReference) -> SsvcSignals:
+def signals_from_report(cve: CVEReference) -> SsvcSignals:
+    """Signals as the model wrote them. Only for the no-trajectory fallback."""
     return SsvcSignals(
         in_kev=cve.in_kev_catalog,
         known_ransomware=cve.known_ransomware_use,
@@ -139,6 +196,78 @@ def _signals_from_cve(cve: CVEReference) -> SsvcSignals:
         epss_probability=cve.epss_probability,
         epss_percentile=cve.epss_percentile,
         severity=cve.severity,
+    )
+
+
+def signals_from_evidence(cve: CVEReference, evidence: Evidence) -> DerivedSignals:
+    """Signals for one CVE read from the tool returns, report only as fallback.
+
+    Per feed, the rule is the same: usable evidence wins outright, and a feed
+    with no usable evidence (never called, failed, unparseable) yields the
+    report's value plus the signal's name in `unverified`. Where several
+    returns exist for the same CVE the most urgent reading wins, consistent
+    with the ladder's most-urgent-first evaluation. Three absences are
+    evidence in their own right and do not fall back: an EPSS `not_found`
+    answer (the CVE is not in the dataset), a CVE record without a CVSS v3
+    score, and an exploit_check whose sources all answered with nothing
+    accepted (a source in ERROR makes the return inconclusive instead).
+    """
+    cve_id = cve.cve_id.upper()
+    unverified: list[str] = []
+
+    kev_entries = evidence.kev.get(cve_id, [])
+    if kev_entries:
+        in_kev = any(k.in_catalog for k in kev_entries)
+        flags = [k.known_ransomware_use for k in kev_entries if k.known_ransomware_use is not None]
+        known_ransomware: bool | None = any(flags) if flags else None
+    else:
+        in_kev = cve.in_kev_catalog
+        known_ransomware = cve.known_ransomware_use
+        unverified.append(SIGNAL_KEV)
+
+    exploit_entries = evidence.exploits.get(cve_id, [])
+    if any(e.has_public_exploit for e in exploit_entries):
+        exploit_public = True
+    elif any(e.arms_conclusive() for e in exploit_entries):
+        # Both sources answered (or one was skipped by configuration) and
+        # nothing was accepted: an evidence-backed absence.
+        exploit_public = False
+    else:
+        # Never called, or every return has a source in ERROR: unknown.
+        exploit_public = cve.exploits_public
+        unverified.append(SIGNAL_EXPLOIT)
+
+    epss_entries = evidence.epss.get(cve_id, [])
+    found = [e for e in epss_entries if e.status is EpssStatus.FOUND]
+    if found:
+        epss_probability = found[-1].probability
+        epss_percentile = found[-1].percentile
+    elif any(e.status is EpssStatus.NOT_FOUND for e in epss_entries):
+        epss_probability = None
+        epss_percentile = None
+    else:
+        epss_probability = cve.epss_probability
+        epss_percentile = cve.epss_percentile
+        unverified.append(SIGNAL_EPSS)
+
+    details = evidence.cve_details.get(cve_id, [])
+    if details:
+        scores = [d.cvss_v3_score for d in details if d.cvss_v3_score is not None]
+        severity: Severity | None = band_for_score(scores[-1]) if scores else None
+    else:
+        severity = cve.severity
+        unverified.append(SIGNAL_SEVERITY)
+
+    return DerivedSignals(
+        signals=SsvcSignals(
+            in_kev=in_kev,
+            known_ransomware=known_ransomware,
+            exploit_public=exploit_public,
+            epss_probability=epss_probability,
+            epss_percentile=epss_percentile,
+            severity=severity,
+        ),
+        unverified=tuple(unverified),
     )
 
 
@@ -172,14 +301,21 @@ def rule_rationale(rule: str) -> str:
     return _RULE_RATIONALE.get(rule, rule)
 
 
-def assess_from_signals(items: Iterable[tuple[str, SsvcSignals]]) -> SsvcAssessment:
+def assess_from_signals(
+    items: Iterable[tuple[str, SsvcSignals]],
+    *,
+    basis: SsvcBasis,
+    unverified_signals: Sequence[str] = (),
+) -> SsvcAssessment:
     """Reduce (vulnerability id, signals) pairs to a single, most-urgent verdict.
 
-    Shape-independent core shared by the LLM triage path (assess_ssvc over the
-    report's CVEReference entries) and the deterministic SBOM gate (findings
-    carry SsvcSignals directly, no report object involved). The most urgent
-    per-item decision wins; the driving id and rule are recorded so the verdict
-    is explainable and auditable. With no items the decision is TRACK.
+    Shape-independent core shared by the LLM triage path (assess_ssvc, signals
+    derived from the trajectory evidence) and the deterministic SBOM gate
+    (findings carry SsvcSignals built from typed tool results, no report
+    object involved). The most urgent per-item decision wins; the driving id
+    and rule are recorded so the verdict is explainable and auditable. With no
+    items the decision is TRACK. `basis` and `unverified_signals` are stamped
+    as given: the caller is the one who knows where the signals came from.
     """
     # Sentinel below Track's rank (0) so the FIRST CVE always registers, even
     # when the whole report is Track. Initializing at Track's rank would make
@@ -217,19 +353,53 @@ def assess_from_signals(items: Iterable[tuple[str, SsvcSignals]]) -> SsvcAssessm
             # null. Unreachable on the triage path, where every id is a
             # CVEReference.cve_id.
             driving_cve = None
+    if unverified_signals:
+        # Exports carry only the rationale text, so the caveat travels with it.
+        rationale += (
+            f" {len(unverified_signals)} signal(s) taken from the report, "
+            "not verified against tool returns."
+        )
 
     return SsvcAssessment(
         decision=best_decision,
         rule=best_rule,
         rationale=rationale[:500],
         driving_cve=driving_cve,
+        basis=basis,
+        unverified_signals=list(unverified_signals),
     )
 
 
-def assess_ssvc(cves: Iterable[CVEReference]) -> SsvcAssessment:
+def assess_ssvc(
+    cves: Iterable[CVEReference],
+    invocations: Sequence["ToolInvocation"] | None,
+) -> SsvcAssessment:
     """Reduce the report's CVEs to a single, most-urgent SSVC verdict.
 
-    Thin adapter over assess_from_signals for the report shape; behavior is
-    pinned bit-exact by the cassette replay gate.
+    `invocations` is the run's captured trajectory. With one, every signal is
+    read from the tool returns (basis EVIDENCE), falling back per signal to
+    the report where no usable evidence exists (basis MIXED, each fallback
+    named). `None` means no trajectory was available at all: the verdict is
+    computed from the report and stamped as such (basis REPORT), never
+    dressed up as evidence-backed. Behavior is pinned bit-exact by the
+    cassette replay gate.
     """
-    return assess_from_signals((cve.cve_id, _signals_from_cve(cve)) for cve in cves)
+    cve_list = list(cves)
+    if invocations is None:
+        return assess_from_signals(
+            ((cve.cve_id, signals_from_report(cve)) for cve in cve_list),
+            basis=SsvcBasis.REPORT,
+        )
+
+    evidence = build_evidence(invocations)
+    items: list[tuple[str, SsvcSignals]] = []
+    unverified: list[str] = []
+    for cve in cve_list:
+        derived = signals_from_evidence(cve, evidence)
+        items.append((cve.cve_id, derived.signals))
+        unverified.extend(f"{cve.cve_id.upper()}:{name}" for name in derived.unverified)
+    return assess_from_signals(
+        items,
+        basis=SsvcBasis.MIXED if unverified else SsvcBasis.EVIDENCE,
+        unverified_signals=unverified,
+    )

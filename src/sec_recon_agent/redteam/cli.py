@@ -72,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help=(
             "comma-separated list of payload ids, categories, tags, or "
-            "MITRE ATLAS technique IDs (e.g. 'AML.T0055,direct'). "
+            "MITRE ATLAS technique IDs (e.g. 'AML.T0051.001,direct'). "
             "Default: all."
         ),
     )

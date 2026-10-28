@@ -17,6 +17,14 @@
 #
 # `cooldown` suppresses the churn of versions superseded within days (`next`
 # 15.5.21 was replaced by 15.5.22 in under 24 hours, after costing a PR).
+# The per-semver cooldown keys exist only where the ecosystem has semver
+# (pip, npm). docker, github-actions and pre-commit take `default-days` alone:
+# `semver-major-days` there is a PARSE ERROR, and a config that fails to parse
+# stops version updates for every ecosystem, silently. Observed on 2026-09-21:
+# the 04:17 scheduled batch still ran with the key in place, a manual "Check
+# for updates" the same evening was rejected with exactly this error. Majors
+# in those ecosystems stay manual anyway (auto-merge policy below), so the
+# longer major cooldown bought nothing there.
 #
 # Auto-merge lives in .github/workflows/dependabot-auto-merge.yml: patch and
 # minor only, never the schema-emitting set (pydantic-ai, pydantic-ai-slim,
@@ -47,6 +55,19 @@ updates:
       python-security:
         applies-to: security-updates
         patterns: ["*"]
+    # Majors that are capped in pyproject.toml on purpose. For a capped
+    # requirement Dependabot proposes WIDENING THE CAP, and that PR touches
+    # pyproject.toml only: uv.lock still pins 1.x, so every check is green while
+    # the protection is removed. The next `uv lock` then resolves the new major
+    # and breaks main (mcp 2.x has no FastMCP; pydantic-ai 1.x code against 2.x).
+    # The auto-merge policy already holds these as majors in the guarded set;
+    # this stops the monthly green-but-wrong PR from existing at all. Each entry
+    # goes when its migration lands: mcp #236, pydantic-ai-slim #237.
+    ignore:
+      - dependency-name: "mcp"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "pydantic-ai-slim"
+        update-types: ["version-update:semver-major"]
     labels:
       - "dependencies"
       - "python"
@@ -114,7 +135,6 @@ updates:
     open-pull-requests-limit: 3
     cooldown:
       default-days: 7
-      semver-major-days: 30
     groups:
       docker-backend-version:
         applies-to: version-updates
@@ -139,7 +159,6 @@ updates:
     open-pull-requests-limit: 3
     cooldown:
       default-days: 7
-      semver-major-days: 30
     groups:
       docker-frontend-version:
         applies-to: version-updates
@@ -173,7 +192,6 @@ updates:
     open-pull-requests-limit: 3
     cooldown:
       default-days: 7
-      semver-major-days: 30
     groups:
       actions-version:
         applies-to: version-updates
@@ -203,7 +221,6 @@ updates:
     open-pull-requests-limit: 3
     cooldown:
       default-days: 7
-      semver-major-days: 30
     groups:
       precommit-version:
         applies-to: version-updates

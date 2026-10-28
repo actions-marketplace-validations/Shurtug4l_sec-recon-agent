@@ -3,8 +3,18 @@
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+# Loopback in both IP families plus the docker-compose service name, each with
+# any port: the complete set of Host values a legitimate client of the MCP
+# server sends. Everything else is a rebinding attempt or a misconfiguration.
+DEFAULT_MCP_ALLOWED_HOSTS: tuple[str, ...] = (
+    "127.0.0.1:*",
+    "localhost:*",
+    "[::1]:*",
+    "mcp-server:*",
+)
 
 
 class Settings(BaseSettings):
@@ -69,6 +79,13 @@ class Settings(BaseSettings):
 
     mcp_server_host: str = "127.0.0.1"
     mcp_server_port: int = Field(default=8001, ge=1024, le=65535)
+    # Host header values the MCP server accepts (DNS-rebinding protection,
+    # always on). Comma-separated; `host:*` matches any port. Blank means the
+    # default below, so an operator cannot lock every client out by exporting
+    # an empty variable. The compose service name is listed because that is
+    # the Host the agent-api container sends; a browser page rebinding its own
+    # domain to 127.0.0.1 sends that domain instead and is refused with 421.
+    mcp_allowed_hosts: str = ""
     agent_api_host: str = "127.0.0.1"
     agent_api_port: int = Field(default=8000, ge=1024, le=65535)
 
@@ -101,6 +118,23 @@ class Settings(BaseSettings):
     # pydantic-ai's own default is 50, deliberately tightened here.
     agent_request_limit: int = Field(default=25, ge=1, le=200)
 
+    # Orthogonal bounds on one run. The round cap above counts model
+    # requests; Anthropic models batch tool calls per turn, so rounds alone
+    # bound neither tool calls nor tokens, and tokens are what cost money:
+    # every round re-sends the whole conversation. Both sit well above the
+    # recorded golden runs (max 8 rounds, ~110k tokens on the SBOM case) and
+    # well below the pathological case. Blank keeps the default; `off` disables.
+    agent_tool_calls_limit: int | None = Field(default=40, ge=1, le=1000)
+    agent_total_tokens_limit: int | None = Field(default=250_000, ge=1_000)
+
+    # Wall-clock deadline for one triage, in seconds (`off` disables). Nothing else bounds
+    # elapsed time: one NVD call can legitimately take ~75s (tenacity backoff
+    # on top of the httpx timeout), so the deadline sits above the recorded
+    # p95 (126s) with headroom for a slow feed and far below "until the
+    # client gives up". The run is cancelled, whatever it consumed is still
+    # charged to the budget window and sealed into the audit trail.
+    triage_deadline_seconds: float | None = Field(default=300.0, gt=0)
+
     # Denial-of-wallet guard: a hard ceiling on estimated LLM spend (USD)
     # summed in-process over a rolling 24h window across all triage runs. None
     # disables it. When the window sum reaches the ceiling, /v1/triage refuses
@@ -117,6 +151,28 @@ class Settings(BaseSettings):
     # the service live; the env flag is the always-off form decided at deploy.
     kill_switch: bool = False
     kill_switch_file: Path | None = None
+
+    @field_validator(
+        "agent_request_limit",
+        "agent_tool_calls_limit",
+        "agent_total_tokens_limit",
+        "triage_deadline_seconds",
+        mode="before",
+    )
+    @classmethod
+    def _run_bound_blank_is_default_off_is_none(cls, raw: object, info: ValidationInfo) -> object:
+        # docker-compose passes an unset host var as "". For a safety bound an
+        # empty value must keep the built-in default, never silently disable
+        # it (that is how three bounds shipped disabled in compose on first
+        # try). Disabling one is a deliberate, spelled-out choice: "off".
+        if isinstance(raw, str):
+            text = raw.strip().lower()
+            if text == "":
+                assert info.field_name is not None
+                return cls.model_fields[info.field_name].default
+            if text in {"off", "none", "disabled"}:
+                return None
+        return raw
 
     @field_validator("denial_of_wallet_usd_per_day", mode="before")
     @classmethod
@@ -148,6 +204,12 @@ class Settings(BaseSettings):
     @property
     def mcp_server_url(self) -> str:
         return f"http://{self.mcp_server_host}:{self.mcp_server_port}"
+
+    @property
+    def mcp_allowed_hosts_list(self) -> list[str]:
+        """Parsed `mcp_allowed_hosts`; the built-in default when blank."""
+        entries = [h.strip() for h in self.mcp_allowed_hosts.split(",") if h.strip()]
+        return entries or list(DEFAULT_MCP_ALLOWED_HOSTS)
 
 
 settings = Settings()

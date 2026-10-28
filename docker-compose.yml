@@ -30,6 +30,15 @@ services:
       # (tenacity, >30s backoff), but the right cap avoids the retry cost.
       NVD_RATE_LIMIT_PER_30S: "${NVD_RATE_LIMIT_PER_30S:-5}"
       GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
+      # Optional bearer gate on the MCP transport. The value must reach BOTH
+      # processes: this one enforces it, agent-api's MCP client presents it.
+      # Empty (default) runs the server open; :8001 is published on the host
+      # loopback only, see .env.example.
+      MCP_AUTH_TOKEN: "${MCP_AUTH_TOKEN:-}"
+      # Host header allowlist for the DNS-rebinding protection, which is
+      # always on. Blank keeps the built-in default (loopback + the
+      # `mcp-server` service name, any port); set it if you rename the service.
+      MCP_ALLOWED_HOSTS: "${MCP_ALLOWED_HOSTS:-}"
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
       # OTEL_EXPORTER_OTLP_ENDPOINT empty -> spans go to stdout. Set to
       # `http://jaeger:4318` to ship to the Jaeger sidecar (started with
@@ -73,6 +82,9 @@ services:
       MCP_SERVER_HOST: "mcp-server"
       MCP_SERVER_PORT: "8001"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY must be set in .env or the host environment}"
+      # Same secret as mcp-server: the agent's MCP client sends it as
+      # `Authorization: Bearer <token>` on every request when set.
+      MCP_AUTH_TOKEN: "${MCP_AUTH_TOKEN:-}"
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
       LLM_PROVIDER: "${LLM_PROVIDER:-anthropic}"
       LLM_MODEL: "${LLM_MODEL:-claude-haiku-4-5-20251001}"
@@ -80,6 +92,14 @@ services:
       # Auth + rate limit. Empty values disable the controls.
       API_KEYS: "${API_KEYS:-}"
       RATE_LIMIT_PER_MINUTE: "${RATE_LIMIT_PER_MINUTE:-}"
+      # Per-run bounds. Empty keeps each built-in default (25 model rounds,
+      # 40 tool calls, 250k total tokens, 300 s wall clock), `off` disables
+      # one; a bound that is hit stops the run, and whatever it consumed is
+      # still charged to the budget window and sealed into the audit trail.
+      AGENT_REQUEST_LIMIT: "${AGENT_REQUEST_LIMIT:-}"
+      AGENT_TOOL_CALLS_LIMIT: "${AGENT_TOOL_CALLS_LIMIT:-}"
+      AGENT_TOTAL_TOKENS_LIMIT: "${AGENT_TOTAL_TOKENS_LIMIT:-}"
+      TRIAGE_DEADLINE_SECONDS: "${TRIAGE_DEADLINE_SECONDS:-}"
       # Operational safety rails (S4). Empty values disable each control.
       # DENIAL_OF_WALLET_USD_PER_DAY caps estimated LLM spend over a rolling
       # 24h window (in-process); over it /v1/triage returns 503.

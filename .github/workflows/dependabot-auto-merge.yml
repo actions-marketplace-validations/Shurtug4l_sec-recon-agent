@@ -14,23 +14,69 @@
 #     and report JSON schemas and trip the record-replay cassette gate
 #     (~$3 to re-record). A grouped PR containing any of them is skipped whole.
 #
+# Which identity arms auto-merge, and why it matters: the eventual merge is
+# attributed to whoever enabled auto-merge, and events created by GITHUB_TOKEN
+# do not start workflow runs. Armed with GITHUB_TOKEN, no Dependabot merge ever
+# triggered an `on: push` workflow here (verified 2026-09-21 on five commits):
+# docker-scan's "scan main on dependency merges", sbom-gate, the non-PR
+# attestations and the Pages redeploy all silently skipped exactly the merges
+# they exist for, while merges armed with the owner's token on the same day
+# ran all of them. The attribution rule is observed, not documented; what
+# GitHub documents is that App installation tokens and PATs trigger events
+# while GITHUB_TOKEN does not. Confirmed for the App on 2026-09-21: #233 was
+# armed and merged by sec-recon-automerge[bot] (9a9b633) and its push started
+# docker-scan with that bot as the triggering actor. The step summary names
+# the arming identity on every run.
+#
+# Where the key lives: the ACTIONS secret store. GitHub's docs say both that
+# Dependabot-triggered workflows only see Dependabot secrets and that
+# pull_request_target is exempt; measured here, `github.secret_source` reads
+# `Actions` on a Dependabot pull_request_target run, so no Dependabot-store
+# copy is needed. Rotation procedure: CONTRIBUTING.md.
+#
+# The App is optional by construction: without AUTOMERGE_APP_CLIENT_ID the job
+# falls back to GITHUB_TOKEN and says so in the step summary, so this workflow
+# never breaks the queue over a missing credential. A configured App that fails
+# to mint (key revoked, App uninstalled) falls back the same way, but with a
+# `::warning::` annotation: blocking every dependency merge over a broken
+# credential would be worse than the old behavior, and degrading silently is
+# what kept three workflows red for weeks in 2026-09.
+#
+# `workflow_dispatch` runs a self-test and nothing else: it mints the token and
+# asserts it can see exactly this repository. Use it after creating the App and
+# after every key rotation, instead of waiting for the next Dependabot PR to
+# find out. It arms nothing and needs no GITHUB_TOKEN permission.
+#
 # Security note: this runs on pull_request_target, which executes in the BASE
-# repo context with write permissions. It therefore never checks out, builds,
-# or otherwise executes PR code, and every value derived from the PR is passed
-# through the environment rather than interpolated into a shell body.
+# repo context with write permissions and, with the App configured, a private
+# key in reach. It therefore never checks out, builds, or otherwise executes PR
+# code, and every value derived from the PR is passed through the environment
+# rather than interpolated into a shell body. The job requires Dependabot as
+# BOTH the PR author and the triggering actor: a human push onto a Dependabot
+# branch does not re-arm anything. The App token is minted only after the
+# policy gate passes, scoped to this repository and to contents + pull-requests
+# write (what enabling auto-merge needs), lives one hour at most, and is
+# revoked by the action's post step. No `workflows` permission: GITHUB_TOKEN
+# can never hold it and still auto-merged PRs that edit .github/workflows, so
+# the server-side merge does not depend on it.
 
 name: Dependabot auto-merge
 
-on: pull_request_target
+on:
+  pull_request_target:
+  workflow_dispatch:
 
 permissions:
-  contents: write # enable auto-merge on the PR
+  contents: write # enable auto-merge on the PR (GITHUB_TOKEN fallback path)
   pull-requests: write # required by gh pr merge --auto
 
 jobs:
   auto-merge:
     runs-on: ubuntu-latest
-    if: github.actor == 'dependabot[bot]'
+    if: >-
+      github.event_name == 'pull_request_target'
+      && github.actor == 'dependabot[bot]'
+      && github.event.pull_request.user.login == 'dependabot[bot]'
     steps:
       - name: Fetch Dependabot metadata
         id: meta
@@ -74,9 +120,78 @@ jobs:
           echo "auto-merge armed for $UPDATE_TYPE: $DEP_NAMES" >> "$GITHUB_STEP_SUMMARY"
           echo "eligible=true" >> "$GITHUB_OUTPUT"
 
+      - name: Mint the App installation token
+        id: app-token
+        if: steps.gate.outputs.eligible == 'true' && vars.AUTOMERGE_APP_CLIENT_ID != ''
+        # A mint failure must not fail the job: the next step falls back and warns.
+        continue-on-error: true
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AUTOMERGE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMERGE_APP_PRIVATE_KEY }}
+          # owner/repositories left empty on purpose: the token is then scoped
+          # to the current repository only.
+          permission-contents: write
+          permission-pull-requests: write
+
       - name: Enable auto-merge
         if: steps.gate.outputs.eligible == 'true'
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh pr merge --auto --rebase "$PR_URL"
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          FALLBACK_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SECRET_SOURCE: ${{ github.secret_source }}
+          APP_CONFIGURED: ${{ vars.AUTOMERGE_APP_CLIENT_ID != '' }}
+        run: |
+          set -euo pipefail
+          if [ -n "$APP_TOKEN" ]; then
+            export GH_TOKEN="$APP_TOKEN"
+            echo "armed by: GitHub App (push workflows will run on merge); secret source: $SECRET_SOURCE" >> "$GITHUB_STEP_SUMMARY"
+          else
+            export GH_TOKEN="$FALLBACK_TOKEN"
+            if [ "$APP_CONFIGURED" = "true" ]; then
+              echo "::warning::The auto-merge App is configured but no token was minted (secret source: $SECRET_SOURCE). Falling back to GITHUB_TOKEN: this merge will not trigger push workflows. Run the self-test (workflow_dispatch) to see why."
+            fi
+            echo "armed by: GITHUB_TOKEN fallback (no push workflows on merge); secret source: $SECRET_SOURCE" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          gh pr merge --auto --rebase "$PR_URL"
+
+  # Proves the credential chain end to end without touching a PR: private key ->
+  # App JWT -> installation on this repository -> scoped token. `permissions: {}`
+  # because nothing here uses GITHUB_TOKEN.
+  self-test:
+    name: self-test the App token
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Mint the App installation token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AUTOMERGE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMERGE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Assert the token sees exactly this repository
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          EXPECTED: ${{ github.repository }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          SECRET_SOURCE: ${{ github.secret_source }}
+        run: |
+          set -euo pipefail
+          repos=$(gh api /installation/repositories --jq '[.repositories[].full_name] | sort | join(",")')
+          {
+            echo "app: \`$APP_SLUG\`, secret source: \`$SECRET_SOURCE\`"
+            echo "repositories visible to the token: \`$repos\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$repos" != "$EXPECTED" ]; then
+            echo "::error::token scope is '$repos', expected exactly '$EXPECTED'"
+            exit 1
+          fi
+          # Read-only call through the scoped token: proves pull-requests access.
+          gh api "repos/$EXPECTED/pulls?per_page=1" --jq 'length' > /dev/null
+          echo "token scope verified: $repos"

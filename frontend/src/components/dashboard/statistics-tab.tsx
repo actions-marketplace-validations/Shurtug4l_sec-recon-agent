@@ -16,6 +16,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { SeverityBarChart, ToolActivityBars } from "@/components/dashboard/charts";
 import { KpiCard } from "@/components/dashboard/kpi-card";
+import { allowedHref } from "@/lib/external-link";
 import { aggregate, formatDuration } from "@/lib/stats";
 import type { HistoryEntry } from "@/lib/types";
 
@@ -181,7 +182,9 @@ export function StatisticsTab({ entries }: { entries: HistoryEntry[] }) {
             {stats.topAttackTechniques.map((technique) => (
               <a
                 key={technique.id}
-                href={technique.url}
+                // Model-written URL from history: only allowed reference hosts
+                // get an href (lib/external-link.ts); otherwise a plain row.
+                href={allowedHref(technique.url) ?? undefined}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="flex items-center justify-between rounded-md px-3 py-2 text-sm transition-colors hover:bg-accent"

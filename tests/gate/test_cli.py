@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 import sec_recon_agent.gate.cli as cli_mod
-from sec_recon_agent.agent.schema import SsvcAssessment, SsvcDecision
+from sec_recon_agent.agent.schema import SsvcAssessment, SsvcBasis, SsvcDecision
 from sec_recon_agent.gate.cli import main
 from sec_recon_agent.gate.models import GatePolicy, GateReport
 from sec_recon_agent.mcp_server.errors import KevDownloadError, SbomError
@@ -24,7 +24,11 @@ def make_report(*, passed: bool) -> GateReport:
         components_scanned=1,
         findings=[],
         ssvc=SsvcAssessment(
-            decision=SsvcDecision.TRACK, rule="no-cves", rationale="test", driving_cve=None
+            decision=SsvcDecision.TRACK,
+            rule="no-cves",
+            rationale="test",
+            driving_cve=None,
+            basis=SsvcBasis.EVIDENCE,
         ),
         policy=GatePolicy(fail_on="act", triggered=[], passed=passed),
         tool_version="0.1.0",

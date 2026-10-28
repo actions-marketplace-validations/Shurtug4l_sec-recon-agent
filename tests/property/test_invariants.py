@@ -16,18 +16,23 @@ from sec_recon_agent.mcp_server.models import (
     NmapPort,
 )
 from sec_recon_agent.mcp_server.security import (
+    FENCE_OVERHEAD,
     UNTRUSTED_END,
     UNTRUSTED_START,
     fence_untrusted,
+    neutralize_markers,
 )
 
 # ----------------------------------------------------------------------------
 # fence_untrusted: the untrusted-content wrapper at the tool boundary.
-# Three invariants:
-#   1. Any non-empty text is wrapped (both markers present).
-#   2. The original text is preserved verbatim inside the wrapping.
+# Four invariants:
+#   1. Any non-empty text is wrapped (both markers present, exactly once).
+#   2. The text is preserved inside the wrapping, except that marker-shaped
+#      tokens have their `<` escaped: we sanitize the BOUNDARY, never the
+#      content, and a forged marker is part of the content.
 #   3. None and "" pass through unchanged (empty fence adds tokens without
 #      changing the LLM's interpretation).
+#   4. With a budget, the output never exceeds budget + FENCE_OVERHEAD.
 # ----------------------------------------------------------------------------
 
 
@@ -44,7 +49,19 @@ def test_fence_wraps_any_non_empty_string(text: str) -> None:
 @settings(max_examples=200)
 def test_fence_preserves_original_content(text: str) -> None:
     result = fence_untrusted(text)
-    assert text in result, "fenced output must include the original text verbatim"
+    assert result is not None
+    assert neutralize_markers(text) in result, "the (marker-neutralized) text must be preserved"
+    # The real markers appear exactly once each, whatever the text carried.
+    assert result.count(UNTRUSTED_START) == 1
+    assert result.count(UNTRUSTED_END) == 1
+
+
+@given(st.text(min_size=1, max_size=3000), st.integers(min_value=1, max_value=600))
+@settings(max_examples=200, suppress_health_check=[HealthCheck.too_slow])
+def test_fence_with_budget_never_exceeds_budget_plus_overhead(text: str, budget: int) -> None:
+    result = fence_untrusted(text, max_chars=budget)
+    assert result is not None
+    assert len(result) <= budget + FENCE_OVERHEAD
 
 
 @given(st.sampled_from([None, ""]))
@@ -54,7 +71,7 @@ def test_fence_passes_empty_through(text: str | None) -> None:
 
 def test_cvecandidate_summary_accommodates_fenced_max_truncation() -> None:
     """Regression: cve_semantic_search truncates the CVE description to 500
-    chars, then wraps it in UNTRUSTED_CONTENT markers (~41 chars of overhead).
+    chars, then wraps it in UNTRUSTED_CONTENT markers (FENCE_OVERHEAD chars).
     CVECandidate.summary must accommodate the fenced result. When it did not
     (max_length was 500), a hit whose description was long enough that the
     fenced form exceeded 500 chars crashed the tool with a string_too_long

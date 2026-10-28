@@ -44,6 +44,8 @@ class CaseResult:
     input_tokens: int | None = None
     output_tokens: int | None = None
     requests: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
 
 
 def _iter_sse_events(text_iter: httpx.Response) -> list[dict[str, str]]:
@@ -71,23 +73,31 @@ def _iter_sse_events(text_iter: httpx.Response) -> list[dict[str, str]]:
     return events
 
 
-def _parse_usage(events: list[dict[str, str]]) -> tuple[int | None, int | None, int | None]:
-    """Pull (input_tokens, output_tokens, requests) from the last usage event."""
+_USAGE_KEYS = (
+    "input_tokens",
+    "output_tokens",
+    "requests",
+    "cache_read_tokens",
+    "cache_write_tokens",
+)
+
+
+def _parse_usage(events: list[dict[str, str]]) -> dict[str, int | None]:
+    """Pull the token counts from the last usage event; every key present,
+    None when the stream carried no usable value for it."""
+    empty: dict[str, int | None] = dict.fromkeys(_USAGE_KEYS)
     usage_payloads = [e["data"] for e in events if e.get("event") == "usage"]
     if not usage_payloads:
-        return None, None, None
+        return empty
     try:
         data = json.loads(usage_payloads[-1])
     except (json.JSONDecodeError, ValueError):
-        return None, None, None
+        return empty
     if not isinstance(data, dict):
-        return None, None, None
-
-    def _int_or_none(key: str) -> int | None:
-        value = data.get(key)
-        return value if isinstance(value, int) else None
-
-    return _int_or_none("input_tokens"), _int_or_none("output_tokens"), _int_or_none("requests")
+        return empty
+    return {
+        key: (value if isinstance((value := data.get(key)), int) else None) for key in _USAGE_KEYS
+    }
 
 
 def run_case(
@@ -167,15 +177,17 @@ def run_case(
             elapsed_seconds=elapsed,
         )
 
-    input_tokens, output_tokens, requests = _parse_usage(events)
+    usage = _parse_usage(events)
     return CaseResult(
         case=case,
         report=report,
         error=None,
         elapsed_seconds=elapsed,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        requests=requests,
+        input_tokens=usage["input_tokens"],
+        output_tokens=usage["output_tokens"],
+        requests=usage["requests"],
+        cache_read_tokens=usage["cache_read_tokens"],
+        cache_write_tokens=usage["cache_write_tokens"],
     )
 
 

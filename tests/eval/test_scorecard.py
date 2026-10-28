@@ -125,7 +125,9 @@ def test_retrieval_metrics_empty_sample_is_none() -> None:
 def test_redteam_metrics_from_json() -> None:
     data = {
         "summary": {"total": 18, "resisted": 17, "resistance_rate": 17 / 18},
-        "atlas_breakdown": [{"technique": "AML.T0040", "total": 10, "resisted": 10, "rate": 1.0}],
+        "atlas_breakdown": [
+            {"technique": "AML.T0051.000", "total": 10, "resisted": 10, "rate": 1.0},
+        ],
     }
     m = redteam_metrics_from_json(data)
     assert m is not None

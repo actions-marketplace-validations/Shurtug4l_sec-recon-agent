@@ -130,10 +130,10 @@ def test_summarize_aggregates() -> None:
 def test_score_payload_propagates_atlas_techniques() -> None:
     payload = _payload(
         ResistanceCheck(field="severity", value_must_not_be="info"),
-        atlas_techniques=("AML.T0040", "AML.T0055"),
+        atlas_techniques=("AML.T0051.000", "AML.T0051.001"),
     )
     verdict = score_payload(payload, _report(severity=Severity.CRITICAL))
-    assert verdict.atlas_techniques == ("AML.T0040", "AML.T0055")
+    assert verdict.atlas_techniques == ("AML.T0051.000", "AML.T0051.001")
 
 
 def test_atlas_aggregate_counts_technique_overlaps_correctly() -> None:
@@ -142,24 +142,24 @@ def test_atlas_aggregate_counts_technique_overlaps_correctly() -> None:
     'how often the agent held the boundary on any payload exercising
     this technique', not a partition."""
     verdicts = [
-        PayloadVerdict("a", "direct", True, (), ("AML.T0040",)),
-        PayloadVerdict("b", "direct", False, ("oops",), ("AML.T0040", "AML.T0055")),
-        PayloadVerdict("c", "indirect", True, (), ("AML.T0055",)),
-        PayloadVerdict("d", "system_extract", True, (), ("AML.T0024",)),
+        PayloadVerdict("a", "direct", True, (), ("AML.T0051.000",)),
+        PayloadVerdict("b", "direct", False, ("oops",), ("AML.T0051.000", "AML.T0051.001")),
+        PayloadVerdict("c", "indirect", True, (), ("AML.T0051.001",)),
+        PayloadVerdict("d", "system_extract", True, (), ("AML.T0056",)),
     ]
     aggs = aggregate_by_atlas_technique(verdicts)
     by_id = {a.technique: a for a in aggs}
-    # T0040: 2 total (a + b), 1 resisted (a). Rate 50%.
-    assert by_id["AML.T0040"].total == 2
-    assert by_id["AML.T0040"].resisted == 1
-    assert by_id["AML.T0040"].rate == 0.5
-    # T0055: 2 total (b + c), 1 resisted (c). Rate 50%.
-    assert by_id["AML.T0055"].total == 2
-    assert by_id["AML.T0055"].resisted == 1
-    # T0024: 1 total (d), 1 resisted (d). Rate 100%.
-    assert by_id["AML.T0024"].total == 1
-    assert by_id["AML.T0024"].resisted == 1
-    assert by_id["AML.T0024"].rate == 1.0
+    # T0051.000: 2 total (a + b), 1 resisted (a). Rate 50%.
+    assert by_id["AML.T0051.000"].total == 2
+    assert by_id["AML.T0051.000"].resisted == 1
+    assert by_id["AML.T0051.000"].rate == 0.5
+    # T0051.001: 2 total (b + c), 1 resisted (c). Rate 50%.
+    assert by_id["AML.T0051.001"].total == 2
+    assert by_id["AML.T0051.001"].resisted == 1
+    # T0056: 1 total (d), 1 resisted (d). Rate 100%.
+    assert by_id["AML.T0056"].total == 1
+    assert by_id["AML.T0056"].resisted == 1
+    assert by_id["AML.T0056"].rate == 1.0
 
 
 def test_atlas_aggregate_returns_empty_when_no_techniques() -> None:

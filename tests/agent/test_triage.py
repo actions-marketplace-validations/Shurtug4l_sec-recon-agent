@@ -4,7 +4,7 @@ import pytest
 from _pytest.monkeypatch import MonkeyPatch
 
 from sec_recon_agent.agent.prompts import SYSTEM_PROMPT
-from sec_recon_agent.agent.triage import build_agent
+from sec_recon_agent.agent.triage import build_agent, mcp_client_headers
 
 
 @pytest.fixture(autouse=True)
@@ -175,3 +175,77 @@ def test_system_prompt_constrains_output_to_triagereport() -> None:
         "reasoning_chain",
     ):
         assert field in SYSTEM_PROMPT, f"Field {field} missing from system prompt"
+
+
+def test_mcp_client_sends_no_header_when_auth_is_off(monkeypatch: MonkeyPatch) -> None:
+    from sec_recon_agent.agent import triage
+
+    monkeypatch.setattr(triage.settings, "mcp_auth_token", None)
+    assert mcp_client_headers() is None
+
+
+def test_mcp_client_presents_the_bearer_token_when_set(monkeypatch: MonkeyPatch) -> None:
+    """MCP_AUTH_TOKEN gates a transport that crosses a container boundary: the
+    server enforces it, and this client must present the same secret or the
+    SSE handshake is refused and no tool is reachable."""
+    from pydantic import SecretStr
+
+    from sec_recon_agent.agent import triage
+
+    monkeypatch.setattr(triage.settings, "mcp_auth_token", SecretStr("s3cret"))
+    assert mcp_client_headers() == {"Authorization": "Bearer s3cret"}
+
+
+def test_mcp_client_treats_blank_token_as_off(monkeypatch: MonkeyPatch) -> None:
+    """compose forwards MCP_AUTH_TOKEN as an empty string when unset; an
+    empty bearer must not be sent (the server treats blank as open too)."""
+    from pydantic import SecretStr
+
+    from sec_recon_agent.agent import triage
+
+    monkeypatch.setattr(triage.settings, "mcp_auth_token", SecretStr(""))
+    assert mcp_client_headers() is None
+
+
+def test_system_prompt_names_the_fence_markers_and_their_id() -> None:
+    """The hard boundary (server-side markers with a random id) and the soft
+    boundary (the prompt) must be joined: the model has to know what the
+    markers look like and that only a matching pair is a boundary."""
+    # The prompt is hard-wrapped; compare on whitespace-normalized text.
+    flat = " ".join(SYSTEM_PROMPT.split())
+    assert '<UNTRUSTED_CONTENT id="..."> and </UNTRUSTED_CONTENT id="...">' in flat
+    lowered = flat.lower()
+    assert "matching pair" in lowered
+    assert "closing tag typed inside the text" in lowered
+    assert "unknown to whoever authored the text" in lowered
+
+
+def test_system_prompt_states_the_character_budgets() -> None:
+    """The schema caps summary / recommended_action at 500 and cves[].summary
+    at 1000; 9 of 11 recorded runs used to burn a full retry round on
+    string_too_long because the prompt never said so."""
+    from sec_recon_agent.agent.schema import CVEReference, TriageReport
+
+    def _cap(model: type, field: str) -> int:
+        for meta in model.model_fields[field].metadata:
+            if isinstance(getattr(meta, "max_length", None), int):
+                return meta.max_length
+        raise AssertionError(f"{model.__name__}.{field} has no max_length")
+
+    flat = " ".join(SYSTEM_PROMPT.split())
+    summary_cap = _cap(TriageReport, "summary")
+    action_cap = _cap(TriageReport, "recommended_action")
+    cve_summary_cap = _cap(CVEReference, "summary")
+    assert f"Plain English. At most {summary_cap} characters" in flat
+    assert f"At most {action_cap} characters: lead with the SSVC decision" in flat
+    assert f"each summary at most {cve_summary_cap} characters" in flat
+
+
+def test_agent_enables_prompt_caching_on_instructions_tools_and_conversation() -> None:
+    from sec_recon_agent.agent.triage import CACHING_MODEL_SETTINGS
+
+    agent = build_agent()
+    assert agent.model_settings is CACHING_MODEL_SETTINGS
+    assert CACHING_MODEL_SETTINGS["anthropic_cache_instructions"] is True
+    assert CACHING_MODEL_SETTINGS["anthropic_cache_tool_definitions"] is True
+    assert CACHING_MODEL_SETTINGS["anthropic_cache"] is True

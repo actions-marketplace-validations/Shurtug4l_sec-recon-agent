@@ -29,11 +29,11 @@ container-image findings).
 
 import hashlib
 from collections.abc import Sequence
-from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
 from sec_recon_agent.agent.schema import CVEReference, Severity, TriageReport
 from sec_recon_agent.export.records import VulnRecord
+from sec_recon_agent.version import package_version
 
 SARIF_SCHEMA_URI = "https://json.schemastore.org/sarif-2.1.0.json"
 SARIF_VERSION = "2.1.0"
@@ -51,13 +51,6 @@ _LEVEL_BY_SEVERITY: dict[Severity, str] = {
 # A record without a severity (gate finding whose advisory carried no usable
 # CVSS data) still deserves attention over a note-level nit.
 _LEVEL_UNKNOWN = "warning"
-
-
-def _resolve_tool_version() -> str:
-    try:
-        return version(_TOOL_NAME)
-    except PackageNotFoundError:
-        return "0.0.0"
 
 
 def _level(severity: Severity | None) -> str:
@@ -170,7 +163,7 @@ def render_sarif(
                     "driver": {
                         "name": _TOOL_NAME,
                         "informationUri": _INFORMATION_URI,
-                        "semanticVersion": tool_version or _resolve_tool_version(),
+                        "semanticVersion": tool_version or package_version(),
                         "rules": rules,
                     },
                 },

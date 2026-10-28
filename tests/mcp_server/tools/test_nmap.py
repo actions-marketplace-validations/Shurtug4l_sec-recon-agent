@@ -124,3 +124,42 @@ def test_parse_caps_host_count() -> None:
 
     result = nmap_parse_xml(xml)
     assert len(result.hosts) == _NMAP_HOST_CAP
+
+
+def test_every_attacker_controlled_string_is_capped() -> None:
+    """The scan XML is caller input. A 20 MB document may carry 100 KB
+    attributes; none of them may reach the model uncapped, and the banners
+    are fenced with their own budget."""
+    from sec_recon_agent.mcp_server.models import (
+        NMAP_BANNER_CHARS,
+        NMAP_HOSTNAME_CHARS,
+        NMAP_NAME_CHARS,
+    )
+    from sec_recon_agent.mcp_server.security import FENCE_OVERHEAD
+
+    huge = "A" * 5000
+    xml = f"""<?xml version="1.0"?>
+<nmaprun start="1730000000" version="7.94">
+  <host>
+    <status state="up"/>
+    <address addr="{huge}" addrtype="ipv4"/>
+    <hostnames><hostname name="{huge}" type="user"/></hostnames>
+    <ports>
+      <port protocol="{huge}" portid="80">
+        <state state="{huge}" reason="syn-ack"/>
+        <service name="{huge}" product="{huge}" version="{huge}"/>
+      </port>
+    </ports>
+  </host>
+</nmaprun>"""
+    result = nmap_parse_xml(xml)
+    host = result.hosts[0]
+    port = host.ports[0]
+    assert len(host.ip) == NMAP_NAME_CHARS
+    assert len(host.hostnames[0]) == NMAP_HOSTNAME_CHARS
+    assert len(port.protocol) == NMAP_NAME_CHARS
+    assert len(port.state) == NMAP_NAME_CHARS
+    assert port.service is not None and len(port.service) == NMAP_NAME_CHARS
+    assert port.product is not None and len(port.product) == NMAP_BANNER_CHARS + FENCE_OVERHEAD
+    assert port.version is not None and len(port.version) == NMAP_BANNER_CHARS + FENCE_OVERHEAD
+    assert port.product.startswith(UNTRUSTED_START) and port.product.endswith(UNTRUSTED_END)

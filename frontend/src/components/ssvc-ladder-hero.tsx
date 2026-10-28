@@ -152,7 +152,6 @@ export function SsvcLadderHero() {
                 type="button"
                 onClick={() => setActive(i)}
                 aria-pressed={isActive}
-                aria-label={`${c.decision}: ${c.cve} (${c.title})`}
                 className={cn(
                   "relative block w-full overflow-hidden rounded-md border text-left transition-colors duration-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
                   isActive ? "border-transparent" : "border-border/70 hover:border-primary/40",
@@ -186,6 +185,12 @@ export function SsvcLadderHero() {
                     )}
                   >
                     {isActive ? c.cve : meta.gloss}
+                  </span>
+                  {/* The accessible name is the visible text plus this tail,
+                      so it always contains what is on screen (WCAG 2.5.3)
+                      in both states and at every width. */}
+                  <span className="sr-only">
+                    {isActive ? ` (${c.title})` : `: ${c.cve} (${c.title})`}
                   </span>
                 </span>
               </button>

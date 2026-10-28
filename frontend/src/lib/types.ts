@@ -42,11 +42,20 @@ export interface AttackTechnique {
 // does not produce it). Ordered most- to least-urgent.
 export type SsvcDecision = "Act" | "Attend" | "Track*" | "Track";
 
+// Where the verdict's signals came from. "evidence": every signal was read
+// from a tool return captured in the run's trajectory. "mixed": at least one
+// signal had no usable tool evidence and was taken from the report as the
+// model wrote it (named in unverified_signals). "report": no trajectory was
+// available, every signal came from the report.
+export type SsvcBasis = "evidence" | "mixed" | "report";
+
 export interface SsvcAssessment {
   decision: SsvcDecision;
   rule: string;          // stable id of the rule that fired (audit / regression)
   rationale: string;     // one-sentence human explanation
   driving_cve: string | null; // the CVE whose signals drove the report-level call
+  basis?: SsvcBasis;     // optional: captures recorded before the field existed
+  unverified_signals?: string[]; // "<CVE-ID>:<kev|exploit|epss|severity>"
 }
 
 // Deterministic post-run grounding verification, computed server-side in
@@ -105,9 +114,11 @@ export interface TriageReport {
 // Token usage for one run, emitted by api/stream.py as a `usage` SSE event
 // after `final`. Any field may be null when pydantic-ai does not surface it.
 export interface TokenUsage {
-  input_tokens: number | null;
+  input_tokens: number | null;   // total input, cache traffic included
   output_tokens: number | null;
   requests: number | null;
+  cache_read_tokens?: number | null;  // prompt-cache reads, priced at 0.1x input
+  cache_write_tokens?: number | null; // prompt-cache writes, priced at 1.25x input
 }
 
 // One streamed agent `node` event, timestamped on arrival (client-side) so the

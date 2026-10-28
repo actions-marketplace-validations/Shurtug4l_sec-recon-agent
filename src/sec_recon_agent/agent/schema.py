@@ -51,14 +51,37 @@ class SsvcDecision(StrEnum):
     TRACK = "Track"
 
 
+class SsvcBasis(StrEnum):
+    """Where the signals behind the SSVC verdict came from.
+
+    EVIDENCE: every signal was read from a structured tool return captured in
+        the run's trajectory, or from an evidence-backed absence (an EPSS
+        "not_found" answer, a CVE record with no CVSS score). The model's
+        report fields were not consulted.
+    MIXED: at least one signal had no usable tool evidence (the feed was never
+        called, failed, or returned something unparseable) and was taken from
+        the report as the model wrote it. `unverified_signals` names each one.
+    REPORT: no trajectory was available, so every signal came from the
+        report. Reproducible from the same report, but not independent of the
+        model. The SBOM gate never produces REPORT: it feeds typed tool
+        results directly, so its basis is always EVIDENCE.
+    """
+
+    EVIDENCE = "evidence"
+    MIXED = "mixed"
+    REPORT = "report"
+
+
 class SsvcAssessment(BaseModel):
     """Deterministic prioritization verdict stamped onto the report server-side.
 
-    NOT produced by the LLM: computed by agent/ssvc.py from the report's CVE
-    signals so the verdict is reproducible from the same inputs. The LLM echoes
-    the resulting decision in `recommended_action` prose; this structured field
-    is the authoritative machine-readable form and the one downstream consumers
-    (scorecard, audit) trust.
+    NOT produced by the LLM: computed by agent/ssvc.py from the signals the
+    tools returned during the run (the trajectory evidence), so the verdict is
+    reproducible from the same inputs and independent of what the model wrote
+    in the report. The LLM echoes the resulting decision in
+    `recommended_action` prose; this structured field is the authoritative
+    machine-readable form and the one downstream consumers (scorecard, audit,
+    exports) trust. `basis` says how much of it rests on tool evidence.
     """
 
     decision: SsvcDecision
@@ -73,6 +96,20 @@ class SsvcAssessment(BaseModel):
     driving_cve: CveIdStr | None = Field(
         default=None,
         description="The CVE whose signals drove the report-level decision, when applicable.",
+    )
+    basis: SsvcBasis = Field(
+        description=(
+            "Provenance of the signals the decision was computed from: tool "
+            "evidence, mixed (some taken from the report), or report only."
+        ),
+    )
+    unverified_signals: list[str] = Field(
+        default_factory=list,
+        max_length=50,
+        description=(
+            "Signals taken from the report for lack of tool evidence, as "
+            '"<CVE-ID>:<kev|exploit|epss|severity>". Empty unless basis is mixed.'
+        ),
     )
 
 

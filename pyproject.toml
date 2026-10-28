@@ -1,6 +1,6 @@
 [project]
 name = "sec-recon-agent"
-version = "0.1.0"
+version = "0.1.4"
 description = "Type-safe security triage agent built on Pydantic AI and a custom MCP server"
 requires-python = ">=3.12"
 readme = "README.md"
@@ -32,7 +32,9 @@ dependencies = [
     # construction. The `<2` cap is the within-major pinning decision made
     # explicit: lock, tests and cassettes are all built on 1.x, upstream is at
     # 2.46, and without the cap an unlocked install ran 2.x for weeks unnoticed.
-    "pydantic-ai-slim[anthropic,mcp]>=1.107.6,<2",
+    # Floor at 1.107.7: earlier 1.x releases are affected by the nested-HTML
+    # resource exhaustion in local web fetching (CVE-2026-107287).
+    "pydantic-ai-slim[anthropic,mcp]>=1.107.7,<2",
     # The old >=2.6.0 floor spanned the 2.12.0-2.14.1 window affected by
     # CVE-2026-58203 (NestedSecretsSettingsSource follows symlinks out of the
     # secrets dir). Floor moved to the fixed release, where the lock already sat.
@@ -41,7 +43,9 @@ dependencies = [
     # written against the 1.x API. Without the cap any unlocked install (the
     # gate action before it read uv.lock, a plain `pip install`) resolves 2.x
     # and dies at import. Lift it with the 2.x migration, not before.
-    "mcp>=1.28.1,<2",
+    # Floor at 1.30.0: earlier releases accumulate StreamableHTTP sessions
+    # without bound (CVE-2026-59951).
+    "mcp>=1.30.0,<2",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
     "httpx>=0.27.0",
@@ -69,6 +73,7 @@ dev = [
     "hypothesis>=6.100.0",
     "types-defusedxml>=0.7.0",
     "pre-commit>=4.0.0",
+    "pyyaml>=6.0.3",
 ]
 
 [project.scripts]
@@ -100,6 +105,12 @@ plugins = ["pydantic.mypy"]
 module = "cvss.*"
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# pyyaml (dev extra) is only read by scripts/gen_atlas_vocab.py, a maintainer
+# tool; an override avoids adding a stub package to the lock for one import.
+module = "yaml.*"
+ignore_missing_imports = true
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
@@ -119,13 +130,12 @@ extend-immutable-calls = ["fastapi.Depends", "fastapi.Security", "fastapi.Header
 # Adversarial corpus contains intentional Unicode homoglyphs (Cyrillic С,
 # full-width hyphens, etc.) used to verify the boundary regex rejects them.
 "tests/property/test_adversarial.py" = ["S", "ASYNC", "RUF001", "RUF003"]
-# Both modules do a single synchronous Path.write_bytes after a streaming
-# download has already paid the network cost. The event-loop block is
-# bounded by the size cap (20 MB / 50 MB) and exists by design. The
-# trailing `# noqa: ASYNC240` keeps getting stripped by ruff-format
-# trailing-comment optimization, so we move the ignore here.
-"src/sec_recon_agent/mcp_server/tools/exploits.py" = ["ASYNC240"]
-"src/sec_recon_agent/mcp_server/tools/kev.py" = ["ASYNC240"]
+# The capture script posts to the fixed localhost dev endpoint; S310 wants
+# the scheme audited on a URL that is a module constant. A trailing
+# `# noqa: S310` is stripped by one ruff version and required by the other
+# (the pre-commit rev and the uv-pinned one disagree on the reported line),
+# so the ignore lives here, where both agree.
+"scripts/capture_fixtures.py" = ["S310"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -139,6 +149,13 @@ filterwarnings = [
     # Scoped to the exact message so genuine DeprecationWarnings still surface.
     # Remove once the pinned upstreams move to inspect.iscoroutinefunction.
     "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning",
+    # uvicorn still imports websockets' legacy server protocol at startup; the
+    # live MCP auth tests (tests/mcp_server/test_auth.py) start a real uvicorn
+    # on a loopback socket, so the import runs inside the suite. Two exact
+    # messages, both raised from site-packages, none from this codebase.
+    # Remove once the pinned uvicorn drops websockets.legacy.
+    "ignore:websockets.legacy is deprecated:DeprecationWarning",
+    "ignore:websockets.server.WebSocketServerProtocol is deprecated:DeprecationWarning",
 ]
 
 [tool.coverage.run]
@@ -148,7 +165,6 @@ branch = true
 # they are exercised by the manual eval/redteam suites, not the fast lane.
 omit = [
     "src/sec_recon_agent/agent/triage.py",       # needs Anthropic key + MCP server
-    "src/sec_recon_agent/api/stream.py",         # entry-point wiring; the handlers are tested via TestClient
     "src/sec_recon_agent/mcp_server/server.py",  # FastMCP boot
     "src/sec_recon_agent/eval/cli.py",           # CLI shell
     "src/sec_recon_agent/eval/runner.py",        # HTTP client against a live stack

@@ -17,7 +17,11 @@ The agent reaches the MCP server over its own HTTP+SSE connection; the
 API process and the MCP server are independent.
 """
 
+import asyncio
 import hmac
+import json
+import time
+import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -40,7 +44,7 @@ from starlette.responses import JSONResponse
 
 from sec_recon_agent.agent.prompts import SYSTEM_PROMPT
 from sec_recon_agent.agent.schema import TriageReport
-from sec_recon_agent.agent.triage import build_agent, export_anthropic_api_key_to_env
+from sec_recon_agent.agent.triage import build_agent, export_anthropic_api_key_to_env, resolve_model
 from sec_recon_agent.api.budget import budget_tracker
 from sec_recon_agent.config import settings
 from sec_recon_agent.eval.cost import estimate_cost_usd
@@ -48,6 +52,7 @@ from sec_recon_agent.export.openvex import DEFAULT_AUTHOR, ProductIdentityError,
 from sec_recon_agent.export.sarif import to_sarif
 from sec_recon_agent.mcp_server.errors import CveNotFoundError
 from sec_recon_agent.observability import setup_tracing
+from sec_recon_agent.version import package_version
 
 # Exceptions whose string form is safe to surface to the SSE client.
 # Everything else is replaced with a generic message: internal exception
@@ -60,7 +65,7 @@ log = structlog.get_logger()
 app = FastAPI(
     title="sec-recon-agent",
     description="Type-safe security triage via Pydantic AI + MCP.",
-    version="0.1.0",
+    version=package_version(),
 )
 
 # ---------------------------------------------------------------------------
@@ -479,107 +484,165 @@ async def triage(request: Request, req: TriageRequest) -> EventSourceResponse:
     # `request` is unused inside the body but slowapi needs it as the
     # first parameter to read the client address. Silence the linter.
     del request
+    return EventSourceResponse(_triage_events(req))
 
-    async def event_generator() -> AsyncIterator[dict[str, Any]]:
-        import time
-        import uuid
 
-        try:
-            agent = build_agent(model_override=req.model)
-        except ValueError as exc:
-            # Bad model override -> emit one error event and bail.
-            yield {"event": "started", "data": req.model_dump_json()}
-            yield {
-                "event": "error",
-                "data": _error_payload(exc, safe_message=str(exc)),
-            }
-            return
+async def _triage_events(req: TriageRequest) -> AsyncIterator[dict[str, Any]]:
+    """The SSE event stream for one triage.
+
+    Module-level rather than a closure inside the route so tests can drive it
+    directly and close it mid-stream, which is exactly what a client
+    disconnect looks like from inside the generator.
+
+    Accounting invariant: whatever the run consumed is charged to the
+    denial-of-wallet window and sealed into the audit trail on EVERY exit
+    path (final event delivered, agent error, usage bound hit, deadline hit,
+    client disconnect), never only on the happy path. A client that aborts
+    the connection one round before completion is billed by the provider in
+    full; a rail that recorded nothing for it would be defeated by the
+    cheapest client behaviour there is.
+    """
+    try:
+        agent = build_agent(model_override=req.model)
+    except ValueError as exc:
+        # Bad model override -> emit one error event and bail.
         yield {"event": "started", "data": req.model_dump_json()}
+        yield {
+            "event": "error",
+            "data": _error_payload(exc, safe_message=str(exc)),
+        }
+        return
+    # build_agent validated the override; resolve it once so the cost
+    # estimate and the audit row name the model the run actually used.
+    model_id = f"{settings.llm_provider}:{resolve_model(req.model)}"
+    yield {"event": "started", "data": req.model_dump_json()}
 
-        started_at = time.monotonic()
+    started_at = time.monotonic()
+    # "incomplete" until the final event is on the wire: an exit that never
+    # reaches that line must not seal into the audit chain as a success.
+    outcome = "incomplete"
+    error_class: str | None = None
+    result_json: str | None = None
+    run_ref: Any = None
+    # Wall-clock bound on the run; asyncio.timeout(None) is a no-op deadline.
+    deadline = asyncio.timeout(settings.triage_deadline_seconds)
+    try:
+        # Bound rounds, tool calls and tokens independently: Anthropic models
+        # batch several tool calls per turn, so rounds alone bound neither,
+        # and tokens are the cost driver since every round re-sends the whole
+        # conversation. UsageLimitExceeded is raised before the over-budget
+        # request and handled cleanly below.
+        limits = UsageLimits(
+            request_limit=settings.agent_request_limit,
+            tool_calls_limit=settings.agent_tool_calls_limit,
+            total_tokens_limit=settings.agent_total_tokens_limit,
+        )
+        async with deadline, agent.iter(req.query, usage_limits=limits) as run:
+            run_ref = run
+            async for node in run:
+                yield {
+                    "event": "node",
+                    "data": _node_event_payload(node),
+                }
+            result_output = run.result.output  # type: ignore[union-attr]
+            messages = _extract_messages(run)
+        # Stamp the deterministic verdicts onto the report AFTER the model
+        # returns. The LLM is told to leave `ssvc` and `grounding` null;
+        # both are computed from the captured trajectory (what the tools
+        # returned), not from the fields the model wrote, and they are the
+        # authoritative, reproducible forms the audit trail records.
+        invocations = _invocations_for(messages)
+        result_output = result_output.model_copy(
+            update={
+                "ssvc": _ssvc_for(result_output, invocations),
+                "grounding": _grounding_for(result_output, invocations),
+            },
+        )
+        result_json = result_output.model_dump_json()
+        yield {"event": "final", "data": result_json}
         outcome = "success"
-        error_class: str | None = None
-        result_json: str | None = None
-        try:
-            # Cap ReAct rounds so a stuck agent fails fast instead of thrashing
-            # to the client timeout. UsageLimitExceeded is raised before the
-            # over-budget request and handled cleanly below.
-            round_cap = UsageLimits(request_limit=settings.agent_request_limit)
-            async with agent.iter(req.query, usage_limits=round_cap) as run:
-                async for node in run:
-                    yield {
-                        "event": "node",
-                        "data": _node_event_payload(node),
-                    }
-                result_output = run.result.output  # type: ignore[union-attr]
-                usage = _extract_usage(run)
-                messages = _extract_messages(run)
-            # Stamp the deterministic verdicts onto the report AFTER the model
-            # returns. The LLM is told to leave `ssvc` and `grounding` null;
-            # these are the authoritative, reproducible forms and the ones the
-            # audit trail records.
-            from sec_recon_agent.agent.ssvc import assess_ssvc
-
-            result_output = result_output.model_copy(
-                update={
-                    "ssvc": assess_ssvc(result_output.cves),
-                    "grounding": _grounding_for(result_output, messages),
-                },
-            )
-            result_json = result_output.model_dump_json()
-            yield {"event": "final", "data": result_json}
-            if usage is not None:
-                yield {"event": "usage", "data": usage}
-                # Charge this run against the denial-of-wallet window. No-ops
-                # when the guard is disabled or the model is unpriced.
-                await _record_run_cost(req.model, usage)
-        except UsageLimitExceeded as exc:
-            # Expected control-flow bound, not a crash: the agent hit the round
-            # cap. Log at warning (not exception) and return a clear, safe
-            # message instead of the generic "internal error".
-            outcome = "error"
-            error_class = exc.__class__.__name__
+        usage = _extract_usage(run_ref)
+        if usage is not None:
+            yield {"event": "usage", "data": usage}
+    except UsageLimitExceeded as exc:
+        # Expected control-flow bound, not a crash: the run hit one of its
+        # usage caps. Log at warning (not exception) and return a clear, safe
+        # message instead of the generic "internal error".
+        outcome = "error"
+        error_class = exc.__class__.__name__
+        log.warning("triage_usage_limit_exceeded", error=str(exc))
+        yield {
+            "event": "error",
+            "data": _error_payload(
+                exc,
+                # pydantic-ai's message names the bound and its value
+                # ("would exceed the request_limit of 25"): operational detail
+                # the caller needs to narrow the query, nothing internal.
+                safe_message=(
+                    f"Triage stopped after reaching its usage budget ({exc}). "
+                    "Narrow the query and retry; a tool may be failing repeatedly."
+                ),
+            ),
+        }
+    except TimeoutError as exc:
+        outcome = "error"
+        if deadline.expired():
+            error_class = "TriageDeadlineExceeded"
             log.warning(
-                "triage_round_cap_exceeded",
-                request_limit=settings.agent_request_limit,
-                error=str(exc),
+                "triage_deadline_exceeded",
+                deadline_seconds=settings.triage_deadline_seconds,
             )
             yield {
                 "event": "error",
                 "data": _error_payload(
                     exc,
                     safe_message=(
-                        "Triage stopped after reaching its step budget of "
-                        f"{settings.agent_request_limit} model rounds. Narrow the "
-                        "query and retry; a tool may be failing repeatedly."
+                        "Triage stopped after exceeding its time budget of "
+                        f"{settings.triage_deadline_seconds:g} seconds; a feed may be "
+                        "slow. Retry, or narrow the query."
                     ),
                 ),
             }
-        except Exception as exc:
-            outcome = "error"
+        else:
+            # A TimeoutError raised inside the run, not by the deadline:
+            # an ordinary failure, reported as such so its origin is honest.
             error_class = exc.__class__.__name__
             log.exception("triage_failed", error=str(exc))
-            yield {
-                "event": "error",
-                "data": _error_payload(exc),
-            }
-        finally:
-            duration_ms = int((time.monotonic() - started_at) * 1000)
-            # Best-effort: never fail the request because the audit log
-            # failed. Worst case we log a warning and drop the event.
-            try:
-                _audit_triage(
-                    event_id=uuid.uuid4().hex,
-                    query=req.query,
-                    result_json=result_json,
-                    outcome=outcome,
-                    error_class=error_class,
-                    duration_ms=duration_ms,
-                )
-            except Exception:
-                log.warning("audit_append_failed", exc_info=True)
-
-    return EventSourceResponse(event_generator())
+            yield {"event": "error", "data": _error_payload(exc)}
+    except (asyncio.CancelledError, GeneratorExit):
+        # The client went away (sse-starlette cancels the task group on
+        # disconnect) or the framework closed the generator. Neither a
+        # success nor an error: seal it as what it is, charge what it
+        # consumed (below), and let the cancellation propagate untouched.
+        outcome = "cancelled"
+        raise
+    except Exception as exc:
+        outcome = "error"
+        error_class = exc.__class__.__name__
+        log.exception("triage_failed", error=str(exc))
+        yield {
+            "event": "error",
+            "data": _error_payload(exc),
+        }
+    finally:
+        duration_ms = int((time.monotonic() - started_at) * 1000)
+        # Charge whatever the run consumed, synchronously: after a disconnect
+        # this block runs inside a cancelled scope, where an await never lands.
+        _charge_run(model_id, _extract_usage(run_ref))
+        # Best-effort: never fail the request because the audit log
+        # failed. Worst case we log a warning and drop the event.
+        try:
+            _audit_triage(
+                event_id=uuid.uuid4().hex,
+                query=req.query,
+                result_json=result_json,
+                outcome=outcome,
+                error_class=error_class,
+                duration_ms=duration_ms,
+                model=model_id,
+            )
+        except Exception:
+            log.warning("audit_append_failed", exc_info=True)
 
 
 def _audit_triage(
@@ -590,12 +653,16 @@ def _audit_triage(
     outcome: str,
     error_class: str | None,
     duration_ms: int,
+    model: str,
 ) -> None:
-    """Append one TriageEvent to the audit store. Settings gate everything."""
+    """Append one TriageEvent to the audit store. Settings gate everything.
+
+    `model` is the provider-prefixed id the run actually used (a per-request
+    override included): a tamper-evident row that attests a run to a model it
+    did not use is worse than no field.
+    """
     if not settings.audit_log_enabled:
         return
-
-    import json
 
     from sec_recon_agent.audit.models import (
         GENESIS_HASH,
@@ -639,7 +706,7 @@ def _audit_triage(
             summary["grounding_status"] if isinstance(summary["grounding_status"], str) else None
         ),
         report_summary_plain=(report_summary_plain if settings.audit_include_summary else None),
-        model=f"{settings.llm_provider}:{settings.llm_model}",
+        model=model,
         duration_ms=duration_ms,
         outcome=outcome,
         error_class=error_class,
@@ -679,8 +746,6 @@ def _extract_usage(run: object) -> str | None:
     input_tokens/output_tokens), so we probe defensively and simply omit the
     event if we cannot read it. Returns a JSON string or None.
     """
-    import json
-
     try:
         result = getattr(run, "result", None)
         usage_fn = getattr(result, "usage", None) or getattr(run, "usage", None)
@@ -705,6 +770,10 @@ def _extract_usage(run: object) -> str | None:
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 "requests": requests,
+                # Prompt-cache traffic, priced at its own multipliers by the
+                # budget rail and the eval scorecard; absent on fakes.
+                "cache_read_tokens": _pick("cache_read_tokens"),
+                "cache_write_tokens": _pick("cache_write_tokens"),
             },
         )
     except Exception:
@@ -712,22 +781,30 @@ def _extract_usage(run: object) -> str | None:
         return None
 
 
-async def _record_run_cost(model_override: str | None, usage_json: str) -> None:
-    """Add one completed run's estimated USD cost to the denial-of-wallet
-    window. Best-effort: a malformed usage payload or an unpriced model simply
-    records nothing (the tracker treats None cost as "unknown, do not count")."""
-    import json
+def _charge_run(model_id: str, usage_json: str | None) -> None:
+    """Add one run's estimated USD cost to the denial-of-wallet window.
 
+    Synchronous on purpose (see BudgetTracker.record_now): it runs from the
+    generator's `finally`, which after a client disconnect executes inside a
+    cancelled scope. Best-effort: no usage, an unparsable payload, or an
+    unpriced model records nothing, and the tracker treats None as "unknown,
+    do not count".
+    """
+    if usage_json is None:
+        return
     try:
         payload = json.loads(usage_json)
     except (json.JSONDecodeError, TypeError):
         return
-    cost = estimate_cost_usd(
-        model=model_override or settings.llm_model,
-        input_tokens=payload.get("input_tokens"),
-        output_tokens=payload.get("output_tokens"),
+    budget_tracker.record_now(
+        estimate_cost_usd(
+            model=model_id,
+            input_tokens=payload.get("input_tokens"),
+            output_tokens=payload.get("output_tokens"),
+            cache_read_tokens=payload.get("cache_read_tokens"),
+            cache_write_tokens=payload.get("cache_write_tokens"),
+        ),
     )
-    await budget_tracker.record(cost)
 
 
 def _extract_messages(run: object) -> list[Any] | None:
@@ -749,7 +826,42 @@ def _extract_messages(run: object) -> list[Any] | None:
         return None
 
 
-def _grounding_for(report: Any, messages: list[Any] | None) -> Any:
+def _invocations_for(messages: list[Any] | None) -> list[Any] | None:
+    """Typed tool invocations off the message history; None when unavailable.
+
+    None is the one "no trajectory" signal both stamps understand: grounding
+    becomes NOT_EVALUATED and the SSVC verdict falls back to the report,
+    stamped `basis=report`. An extraction failure degrades the same way
+    instead of failing a triage the model already completed.
+    """
+    if messages is None:
+        return None
+    try:
+        from sec_recon_agent.agent.trajectory import extract_tool_invocations
+
+        return extract_tool_invocations(messages)
+    except Exception:
+        log.warning("trajectory_extract_failed", exc_info=True)
+        return None
+
+
+def _ssvc_for(report: Any, invocations: list[Any] | None) -> Any:
+    """SSVC verdict over the trajectory evidence; never raises.
+
+    A failure inside the evidence path degrades to the report-only verdict,
+    which is stamped `basis=report` so the downgrade is visible to every
+    consumer rather than silently presented as evidence-backed.
+    """
+    from sec_recon_agent.agent.ssvc import assess_ssvc
+
+    try:
+        return assess_ssvc(report.cves, invocations)
+    except Exception:
+        log.warning("ssvc_evidence_failed", exc_info=True)
+        return assess_ssvc(report.cves, None)
+
+
+def _grounding_for(report: Any, invocations: list[Any] | None) -> Any:
     """Grounding assessment for the final report; never raises.
 
     Any unexpected failure downgrades to an honest NOT_EVALUATED stamp: the
@@ -758,12 +870,11 @@ def _grounding_for(report: Any, messages: list[Any] | None) -> Any:
     from sec_recon_agent.agent.schema import GroundingAssessment, GroundingStatus
 
     try:
-        if messages is None:
+        if invocations is None:
             return GroundingAssessment(status=GroundingStatus.NOT_EVALUATED)
         from sec_recon_agent.agent.grounding import verify_grounding
-        from sec_recon_agent.agent.trajectory import extract_tool_invocations
 
-        return verify_grounding(report, extract_tool_invocations(messages))
+        return verify_grounding(report, invocations)
     except Exception:
         log.warning("grounding_verify_failed", exc_info=True)
         return GroundingAssessment(status=GroundingStatus.NOT_EVALUATED)
@@ -777,14 +888,10 @@ def _node_event_payload(node: object) -> str:
     raw internal state can leak instruction-like content from tool output
     into the SSE stream. Class name is a stable progress signal.
     """
-    import json
-
     return json.dumps({"node": node.__class__.__name__})
 
 
 def _error_payload(exc: BaseException, safe_message: str | None = None) -> str:
-    import json
-
     if safe_message is not None:
         message = safe_message
     elif isinstance(exc, _SAFE_TO_ECHO):

@@ -23,6 +23,7 @@ from typing import Annotated, Any
 import structlog
 from pydantic import Field
 
+from sec_recon_agent.mcp_server.effects import declared_tool
 from sec_recon_agent.mcp_server.errors import (
     MalformedSbomPayloadError,
     UnsupportedSbomFormatError,
@@ -31,7 +32,6 @@ from sec_recon_agent.mcp_server.models import (
     SbomComponent,
     SbomComponentList,
 )
-from sec_recon_agent.mcp_server.server import mcp
 from sec_recon_agent.observability import get_tracer
 
 log = structlog.get_logger()
@@ -126,7 +126,7 @@ def _parse_cyclonedx(payload: dict[str, Any]) -> list[SbomComponent]:
         out.append(
             SbomComponent(
                 name=name.strip()[:200],
-                version=(version.strip()[:100] if version else None),
+                version=((version.strip()[:100] or None) if version else None),
                 ecosystem=_ecosystem_from_purl(purl),
                 purl=(purl[:500] if purl else None),
             ),
@@ -156,7 +156,7 @@ def _parse_spdx(payload: dict[str, Any]) -> list[SbomComponent]:
         out.append(
             SbomComponent(
                 name=name.strip()[:200],
-                version=(version.strip()[:100] if version else None),
+                version=((version.strip()[:100] or None) if version else None),
                 ecosystem=_ecosystem_from_purl(purl),
                 purl=(purl[:500] if purl else None),
             ),
@@ -199,7 +199,7 @@ def _dedupe(components: list[SbomComponent]) -> list[SbomComponent]:
     return out
 
 
-@mcp.tool()
+@declared_tool()
 def sbom_ingest(
     content: Annotated[
         str,

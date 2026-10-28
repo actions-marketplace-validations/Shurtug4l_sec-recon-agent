@@ -1,7 +1,7 @@
 {
   "model": "sonnet",
-  "date": "2026-07-07",
-  "commit": "c459228",
+  "date": "2026-09-22",
+  "commit": "feea11f",
   "pricing_note": "Anthropic published rates as of 2026-06-24",
-  "source": "make scorecard on the live stack (post ground-truth fix, PR eval-xz-kev)"
+  "source": "make scorecard on the live stack after the 2026-09-22 audit PRs (evidence-derived SSVC, per-source exploit status, fence id, prompt budgets, prompt caching)"
 }

@@ -6,15 +6,27 @@ name: release-images
 #
 # Tag-triggered on purpose: a release is a deliberate act, not a side
 # effect of every merge. `latest` tracks the newest semver tag
-# (metadata-action latest=auto); workflow_dispatch runs publish a
+# (metadata-action latest=auto); a plain workflow_dispatch publishes a
 # sha-<short> tag only, for pre-release smoke tests without touching the
 # semver namespace.
 #
-# Multi-arch (amd64 + arm64 via QEMU): the GHCR channel exists to hand a
-# colleague `docker compose pull`, and Apple-silicon laptops are the
-# common case. The arm64 leg emulates the ONNX model bake, which is slow
-# but tag-rare; if it ever exceeds the timeout, dropping arm64 here is
-# the documented escape hatch.
+# Multi-arch (amd64 + arm64), each platform on its NATIVE runner: the GHCR
+# channel exists to hand a colleague `docker compose pull`, and Apple-silicon
+# laptops are the common case. Every platform pushes its image by digest,
+# then one merge job per image stitches the digests into a single tagged
+# index (`docker buildx imagetools create`), so a tag never points at a
+# partial index. The first version built arm64 under QEMU on one runner. It
+# worked in 2026-07 and failed both v0.1.2 attempts in 2026-09: Node's
+# network I/O stalls under user-mode emulation (next/font ETIMEDOUT once,
+# `npm ci` hung for 43 minutes the next time). Native runners remove the
+# emulation instead of raising the timeout around it.
+#
+# Recovery path: `release-tag` rebuilds an EXISTING git tag from its own
+# source with the workflow as it is on the dispatching ref, and publishes it
+# under that tag's semver names. It exists because a tag push always runs the
+# workflow file frozen in the tagged commit, so a release whose pipeline was
+# broken at tag time cannot be fixed by re-running it. `only` limits the run
+# to one image, so an already-published image keeps its digest.
 #
 # Verify what was published:
 #   docker buildx imagetools inspect ghcr.io/shurtug4l/sec-recon-agent:<tag>
@@ -24,9 +36,23 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      release-tag:
+        description: >-
+          Existing git tag to rebuild and publish under its semver names
+          (e.g. v0.1.2). Empty: build the dispatching ref, publish sha-* only.
+        required: false
+        default: ""
+        type: string
+      only:
+        description: "Limit the run to one image."
+        required: false
+        default: all
+        type: choice
+        options: [all, backend, frontend]
 
 concurrency:
-  group: release-images-${{ github.ref }}
+  group: release-images-${{ github.ref }}-${{ inputs.release-tag }}
   # Never cancel a half-pushed release: a re-run overwrites tags
   # atomically, a cancellation can leave latest pointing at a partial
   # multi-arch index.
@@ -37,31 +63,91 @@ permissions:
   packages: write
 
 jobs:
-  publish:
-    name: publish ${{ matrix.image.name }}
+  # Resolves what to build and under which names, once, so build and merge
+  # cannot disagree. Inputs go through the environment and a strict pattern
+  # before anything uses them as a ref.
+  plan:
+    name: plan
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      images: ${{ steps.plan.outputs.images }}
+      prefix: ${{ steps.plan.outputs.prefix }}
+      ref: ${{ steps.plan.outputs.ref }}
+      version: ${{ steps.plan.outputs.version }}
+      tag-rules: ${{ steps.plan.outputs.tag-rules }}
+    steps:
+      - name: Resolve ref, version and image set
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release-tag }}
+          OWNER: ${{ github.repository_owner }}
+          ONLY: ${{ inputs.only }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT" = "push" ]; then
+            version="$REF_NAME"
+          else
+            version="$RELEASE_TAG"
+          fi
+          if [ -n "$version" ] && ! printf '%s' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::'$version' is not a vMAJOR.MINOR.PATCH tag"
+            exit 1
+          fi
+          if [ -n "$version" ]; then ref="refs/tags/$version"; else ref="$SHA"; fi
+
+          backend='{"name":"backend","context":".","dockerfile":"Dockerfile","target":"runtime","repository":"sec-recon-agent"}'
+          frontend='{"name":"frontend","context":"./frontend","dockerfile":"frontend/Dockerfile","target":"","repository":"sec-recon-frontend"}'
+          case "${ONLY:-all}" in
+            backend) images="[$backend]" ;;
+            frontend) images="[$frontend]" ;;
+            *) images="[$backend,$frontend]" ;;
+          esac
+
+          {
+            echo "version=$version"
+            echo "ref=$ref"
+            echo "images=$images"
+            # GHCR names are lowercase; metadata-action normalizes on its own, the
+            # raw `outputs:` and `imagetools` references below do not.
+            echo "prefix=ghcr.io/${OWNER,,}"
+            # One definition of the tag rules: the build job needs them too, because
+            # metadata-action derives the image.version LABEL from the same rules.
+            echo "tag-rules<<RULES"
+            if [ -n "$version" ]; then
+              echo "type=semver,pattern={{version}},value=$version"
+              echo "type=semver,pattern={{major}}.{{minor}},value=$version"
+            else
+              echo "type=sha"
+            fi
+            echo "RULES"
+          } >> "$GITHUB_OUTPUT"
+          echo "ref \`$ref\`, version \`${version:-none (sha-* only)}\`, images \`${ONLY:-all}\`" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: build ${{ matrix.image.name }} (${{ matrix.platform.arch }})
+    needs: plan
+    runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 30
 
     strategy:
       fail-fast: false
       matrix:
-        image:
-          - name: backend
-            context: "."
-            dockerfile: "Dockerfile"
-            target: "runtime"
-            repository: "sec-recon-agent"
-          - name: frontend
-            context: "./frontend"
-            dockerfile: "frontend/Dockerfile"
-            target: ""
-            repository: "sec-recon-frontend"
+        image: ${{ fromJSON(needs.plan.outputs.images) }}
+        platform:
+          - { arch: amd64, runner: ubuntu-latest }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
 
     steps:
       - uses: actions/checkout@v7
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -73,27 +159,112 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Image metadata
+      # With `release-tag` the source is the tag's commit, not github.sha (the
+      # dispatching ref). metadata-action stamps github.sha into image.revision
+      # by default, which would label the image with a commit it was not built
+      # from; BuildKit provenance reads the checkout and was always right.
+      - name: Resolve the source commit
+        id: src
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Image labels
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image.repository }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,enable=${{ github.event_name == 'workflow_dispatch' }}
+          images: ${{ needs.plan.outputs.prefix }}/${{ matrix.image.repository }}
+          tags: ${{ needs.plan.outputs.tag-rules }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.src.outputs.sha }}
 
-      - name: Build and push ${{ matrix.image.name }}
+      # Pushed by digest, untagged: nothing is reachable by name until the
+      # merge job has every platform.
+      - name: Build and push ${{ matrix.image.name }} by digest
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.image.context }}
           file: ${{ matrix.image.dockerfile }}
           target: ${{ matrix.image.target }}
-          push: true
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/${{ matrix.platform.arch }}
           provenance: mode=max
           sbom: true
-          tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.image.name }}
-          cache-to: type=gha,scope=${{ matrix.image.name }},mode=max
+          outputs: type=image,name=${{ needs.plan.outputs.prefix }}/${{ matrix.image.repository }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.image.name }}-${{ matrix.platform.arch }}
+          cache-to: type=gha,scope=${{ matrix.image.name }}-${{ matrix.platform.arch }},mode=max
+
+      - name: Export the digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: digests-${{ matrix.image.name }}-${{ matrix.platform.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: publish ${{ matrix.image.name }}
+    needs: [plan, build]
+    # Runs even when a build leg failed, so one broken image does not hold the
+    # healthy one back; the digest count below still refuses a partial index.
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.plan.outputs.images) }}
+
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-${{ matrix.image.name }}-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ needs.plan.outputs.prefix }}/${{ matrix.image.repository }}
+          tags: ${{ needs.plan.outputs.tag-rules }}
+
+      # Both platform digests or nothing: a missing leg fails here, before
+      # any tag moves.
+      - name: Create and push the multi-arch index
+        env:
+          IMAGE: ${{ needs.plan.outputs.prefix }}/${{ matrix.image.repository }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/digests" 2>/dev/null || { echo "::error::no platform digests were produced"; exit 1; }
+          count=$(find . -maxdepth 1 -type f | wc -l)
+          if [ "$count" -ne 2 ]; then
+            echo "::error::expected 2 platform digests, found $count"
+            exit 1
+          fi
+          # shellcheck disable=SC2046
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "$IMAGE@sha256:%s " *)
+
+      - name: Inspect the published index
+        env:
+          IMAGE: ${{ needs.plan.outputs.prefix }}/${{ matrix.image.repository }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: docker buildx imagetools inspect "$IMAGE:$VERSION"

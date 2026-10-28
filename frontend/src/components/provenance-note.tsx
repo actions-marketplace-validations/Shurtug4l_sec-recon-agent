@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { ChevronDown, Cpu, Database, Fingerprint, ShieldCheck } from "lucide-react";
+import { AlertTriangle, ChevronDown, Cpu, Database, Fingerprint, ShieldCheck } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import {
@@ -56,7 +56,7 @@ const LANES: Lane[] = [
   },
 ];
 
-export function ProvenanceNote() {
+export function ProvenanceNote({ shared = false }: { shared?: boolean }) {
   const [open, setOpen] = useState(false);
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
@@ -112,22 +112,46 @@ export function ProvenanceNote() {
                 );
               })}
             </div>
-            <div className="flex items-start gap-2 rounded-lg border border-primary/20 bg-primary/5 p-3">
-              <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
-              <p className="text-xs leading-relaxed">
-                This boundary is the injection-resistance story: a prompt injection
-                that fully persuades the model still cannot move the verdict from{" "}
-                <span className="font-semibold">Act</span> to{" "}
-                <span className="font-semibold">Track</span>, because the model
-                does not hold that pen. The deterministic lane does.{" "}
-                <Link
-                  href="/guide#ssvc"
-                  className="font-medium text-primary hover:underline print:hidden"
-                >
-                  How the verdict is decided
-                </Link>
-                .
-              </p>
+            <div
+              className={cn(
+                "flex items-start gap-2 rounded-lg border p-3",
+                shared ? "border-warning/40 bg-warning/10" : "border-primary/20 bg-primary/5",
+              )}
+            >
+              {shared ? (
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+              ) : (
+                <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+              )}
+              {shared ? (
+                <p className="text-xs leading-relaxed">
+                  These lanes describe a live run. This report came from a shared
+                  link, so none of them can be checked here: anyone who writes the
+                  link holds every pen, the deterministic lane included.{" "}
+                  <Link
+                    href="/guide#ssvc"
+                    className="font-medium text-primary hover:underline print:hidden"
+                  >
+                    How the verdict is decided
+                  </Link>
+                  .
+                </p>
+              ) : (
+                <p className="text-xs leading-relaxed">
+                  This boundary is the injection-resistance story: a prompt injection
+                  that fully persuades the model still cannot move the verdict from{" "}
+                  <span className="font-semibold">Act</span> to{" "}
+                  <span className="font-semibold">Track</span>, because the model
+                  does not hold that pen. The deterministic lane does.{" "}
+                  <Link
+                    href="/guide#ssvc"
+                    className="font-medium text-primary hover:underline print:hidden"
+                  >
+                    How the verdict is decided
+                  </Link>
+                  .
+                </p>
+              )}
             </div>
           </CardContent>
         </CollapsibleContent>

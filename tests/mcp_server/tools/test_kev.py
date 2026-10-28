@@ -261,12 +261,18 @@ async def test_entry_with_truncatable_fields() -> None:
     result = await kev_check("CVE-2030-0001")
 
     assert result.in_catalog is True
-    # Bounds now include ~41 chars of UNTRUSTED marker overhead on top of
-    # the intended content cap (500 / 1000 / 2000); model max_length is
-    # 550 / 1050 / 2050.
+    # Bounds are the payload budget plus the fence overhead (both markers
+    # and the two newlines), sized from the same constants the tool uses.
+    from sec_recon_agent.mcp_server.models import (
+        KEV_NOTES_CHARS,
+        KEV_REQUIRED_ACTION_CHARS,
+        KEV_VULNERABILITY_NAME_CHARS,
+    )
+    from sec_recon_agent.mcp_server.security import FENCE_OVERHEAD
+
     assert result.vulnerability_name is not None
-    assert len(result.vulnerability_name) <= 550
+    assert len(result.vulnerability_name) <= KEV_VULNERABILITY_NAME_CHARS + FENCE_OVERHEAD
     assert result.required_action is not None
-    assert len(result.required_action) <= 1050
+    assert len(result.required_action) <= KEV_REQUIRED_ACTION_CHARS + FENCE_OVERHEAD
     assert result.notes is not None
-    assert len(result.notes) <= 2050
+    assert len(result.notes) <= KEV_NOTES_CHARS + FENCE_OVERHEAD

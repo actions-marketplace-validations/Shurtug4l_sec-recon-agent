@@ -39,8 +39,8 @@ test:  ## Run the pytest suite locally (outside Docker).
 	uv run pytest -q
 
 lint:  ## Run backend (ruff + mypy --strict) and frontend (ESLint) lints.
-	uv run ruff check src tests
-	uv run mypy src
+	uv run ruff check src tests scripts
+	uv run mypy src scripts
 	cd frontend && npm run lint
 
 ui:  ## Open the frontend UI in the default browser (assumes `make up` is running).

@@ -10,6 +10,7 @@ from sec_recon_agent.agent.schema import (
     CVEReference,
     Severity,
     SsvcAssessment,
+    SsvcBasis,
     SsvcDecision,
     TriageReport,
 )
@@ -50,6 +51,7 @@ def _report(**overrides: Any) -> TriageReport:
             rule="kev-active-exploitation",
             rationale="on the CISA KEV catalog: actively exploited in the wild",
             driving_cve="CVE-2021-44228",
+            basis=SsvcBasis.EVIDENCE,
         ),
     }
     base.update(overrides)

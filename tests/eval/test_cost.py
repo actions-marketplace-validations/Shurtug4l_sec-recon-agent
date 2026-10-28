@@ -49,3 +49,28 @@ def test_estimate_cost_treats_one_missing_token_count_as_zero() -> None:
     # Only output tokens known: input contributes 0, not None.
     cost = estimate_cost_usd("haiku", None, 1_000_000)
     assert cost == pytest.approx(5.0)
+
+
+def test_cache_tokens_are_priced_at_their_multipliers() -> None:
+    """input_tokens is the total, cache traffic included: 3M input of which 1M
+    cache reads ($0.10 on haiku) and 1M cache writes ($1.25) leaves 1M
+    uncached at the plain $1."""
+    cost = estimate_cost_usd(
+        "haiku", 3_000_000, 0, cache_read_tokens=1_000_000, cache_write_tokens=1_000_000
+    )
+    assert cost == pytest.approx(1.0 + 0.1 + 1.25)
+
+
+def test_cache_traffic_never_exceeds_the_total_it_is_carved_from() -> None:
+    """A payload where cache counts exceed the total (a fake, or a provider
+    quirk) must not go negative on the uncached remainder."""
+    cost = estimate_cost_usd("haiku", 1_000_000, 0, cache_read_tokens=2_000_000)
+    assert cost == pytest.approx(0.2)
+
+
+def test_missing_cache_counts_change_nothing() -> None:
+    plain = estimate_cost_usd("haiku", 1_000_000, 1_000_000)
+    explicit = estimate_cost_usd(
+        "haiku", 1_000_000, 1_000_000, cache_read_tokens=None, cache_write_tokens=None
+    )
+    assert plain == explicit == pytest.approx(6.0)

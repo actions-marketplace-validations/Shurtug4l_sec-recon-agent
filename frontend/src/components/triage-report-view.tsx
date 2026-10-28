@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import Link from "next/link";
 import {
   AlertTriangle,
@@ -38,6 +38,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { InfoTip, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { downloadJson, downloadMarkdown, reportToMarkdown } from "@/lib/markdown-export";
+import { allowedHref } from "@/lib/external-link";
 import { buildPermalink } from "@/lib/permalink";
 import { cn } from "@/lib/utils";
 import type {
@@ -212,9 +213,13 @@ function unfence(text: string): { body: string; fenced: boolean } {
 export function TriageReportView({
   report,
   query,
+  shared = false,
 }: {
   report: TriageReport;
   query?: string;
+  // True on /r: the report came from a permalink, so its server-side stamps
+  // are rendered as unverified claims.
+  shared?: boolean;
 }) {
   const [linkState, setLinkState] = useState<"idle" | "copied" | "toolarge">("idle");
   // Grounding detail panel; opens by default when the verifier flagged
@@ -247,7 +252,7 @@ export function TriageReportView({
   }
 
   function handleExportMarkdown() {
-    const md = reportToMarkdown(report, query);
+    const md = reportToMarkdown(report, query, { shared });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-").replace(/Z$/, "");
     downloadMarkdown(`triage-${stamp}.md`, md);
   }
@@ -263,15 +268,20 @@ export function TriageReportView({
   function handleExportJson() {
     const stamp = new Date().toISOString().replace(/[:.]/g, "-").replace(/Z$/, "");
     // The full validated report, verbatim - the machine-readable form that
-    // carries the deterministic SSVC verdict and per-feed coverage.
-    downloadJson(`triage-${stamp}.json`, JSON.stringify(report, null, 2));
+    // carries the deterministic SSVC verdict and per-feed coverage. A shared
+    // report is wrapped instead: it was never validated here, and the wrapper
+    // makes `sec-recon-export` reject it rather than turn a forged verdict
+    // into SARIF or OpenVEX under this project's name.
+    const payload = shared ? { source: "shared-permalink-unverified", report } : report;
+    downloadJson(`triage-${stamp}.json`, JSON.stringify(payload, null, 2));
   }
 
   return (
     <div id="printable-report" className="printable-report animate-fade-in space-y-4">
+      {shared && <SharedReportNote />}
       <Card className="border-2 border-primary/20">
         <CardHeader className="space-y-3">
-          {report.ssvc && <SsvcVerdict ssvc={report.ssvc} />}
+          {report.ssvc && <SsvcVerdict ssvc={report.ssvc} shared={shared} />}
           <div className="flex flex-wrap items-center gap-2">
             <Badge
               className={cn("text-xs uppercase tracking-wider", severityClass[report.severity])}
@@ -287,11 +297,12 @@ export function TriageReportView({
                 The agent&apos;s self-assessed confidence: high = backed by direct
                 tool data, medium = partial, low = speculative or a tool failed
                 during the run. Self-reported by the model; the grounding badge next
-                to it is the server-verified counterpart.
+                to it is the server-verified counterpart
+                {shared ? ", except on a shared link, where it is a claim too" : ""}.
               </InfoTip>
             </span>
             {report.grounding && (
-              <GroundingBadge grounding={report.grounding} onClick={handleShowGrounding} />
+              <GroundingBadge grounding={report.grounding} shared={shared} onClick={handleShowGrounding} />
             )}
             <div className="ml-auto flex items-center gap-1 print:hidden">
               <Button
@@ -358,7 +369,7 @@ export function TriageReportView({
       </Card>
 
       {report.signal_coverage?.length > 0 && (
-        <SignalCoverageStrip coverage={report.signal_coverage} />
+        <SignalCoverageStrip coverage={report.signal_coverage} shared={shared} />
       )}
 
       {report.cves.length > 0 && (
@@ -378,15 +389,13 @@ export function TriageReportView({
               <Card key={cve.cve_id} id={`cve-${cve.cve_id}`} className="scroll-mt-20 overflow-hidden">
                 <CardHeader className="space-y-2 pb-3">
                   <div className="flex flex-wrap items-center gap-2">
-                    <a
-                      href={cve.nvd_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="font-mono text-sm font-semibold text-primary hover:underline"
+                    <ExternalRef
+                      url={cve.nvd_url}
+                      className="font-mono text-sm font-semibold"
+                      icon
                     >
                       {cve.cve_id}
-                      <ExternalLink className="ml-1 inline h-3 w-3" />
-                    </a>
+                    </ExternalRef>
                     <Badge className={cn("text-[10px] uppercase", severityClass[cve.severity])}>
                       {cve.severity}
                     </Badge>
@@ -493,19 +502,106 @@ export function TriageReportView({
       {report.grounding && (
         <GroundingSection
           grounding={report.grounding}
+          shared={shared}
           open={groundingOpen}
           onOpenChange={setGroundingOpen}
         />
       )}
 
-      <ProvenanceNote />
+      <ProvenanceNote shared={shared} />
 
       <ReasoningChain steps={report.reasoning_chain} />
     </div>
   );
 }
 
-function SsvcVerdict({ ssvc }: { ssvc: SsvcAssessment }) {
+// Rendered inside #printable-report so it travels with the PDF: on /r the
+// whole report came from the link, and the print stylesheet hides the
+// interactive chips that carry the per-stamp "not verified" labels.
+function SharedReportNote() {
+  return (
+    <div
+      role="note"
+      className="flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm"
+    >
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" aria-hidden="true" />
+      <p className="leading-relaxed">
+        <span className="font-medium">Unverified content.</span> This report was decoded
+        from a shared link. Anyone can write one, and this site did not produce or check
+        it: the SSVC verdict and the grounding assessment are claims. Run the triage
+        yourself for a result this deployment computed.
+      </p>
+    </div>
+  );
+}
+
+// A report URL as a link only when it points at an allowed reference host
+// (lib/external-link.ts); otherwise the label renders as plain text, so a
+// model-written or permalink-forged URL never becomes an off-site link here.
+function ExternalRef({
+  url,
+  className,
+  icon = false,
+  children,
+}: {
+  url: string;
+  className: string;
+  icon?: boolean;
+  children: ReactNode;
+}) {
+  const href = allowedHref(url);
+  if (!href) {
+    return (
+      <span className={className} title="Link withheld: not an NVD or MITRE ATT&CK URL">
+        {children}
+      </span>
+    );
+  }
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={cn(className, "text-primary hover:underline")}
+    >
+      {children}
+      {icon && <ExternalLink className="ml-1 inline h-3 w-3" />}
+    </a>
+  );
+}
+
+// On /r the report is decoded from the link, so the server-side stamps
+// (SSVC verdict, grounding) are claims made by whoever built the link: this
+// chip replaces "deterministic, server-computed" there. `plain` renders a
+// title-only span for spots inside another control (the grounding
+// collapsible trigger), where a tooltip button would nest interactives.
+function SharedClaimChip({ subject, plain = false }: { subject: string; plain?: boolean }) {
+  const className =
+    "rounded border border-warning/60 px-1.5 py-0.5 font-mono text-[10px] normal-case tracking-normal text-foreground";
+  const gloss = `This ${subject} was read from the shared link, not computed by this site. Anyone can write a permalink, so treat it as a claim: re-run the triage to get a result this deployment computed.`;
+  if (plain) {
+    return (
+      <span className={className} title={gloss}>
+        from the link · not verified
+      </span>
+    );
+  }
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        className={cn(
+          className,
+          "cursor-help focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
+        )}
+      >
+        from the link · not verified
+      </TooltipTrigger>
+      <TooltipContent>{gloss}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+function SsvcVerdict({ ssvc, shared }: { ssvc: SsvcAssessment; shared: boolean }) {
   const meta = SSVC_META[ssvc.decision];
   const Icon = meta.icon;
   return (
@@ -515,17 +611,22 @@ function SsvcVerdict({ ssvc }: { ssvc: SsvcAssessment }) {
         <span title="SSVC: Stakeholder-Specific Vulnerability Categorization, CISA's scheme for deciding how urgently to act on a vulnerability. A prioritization decision, not a severity score.">
           SSVC verdict
         </span>
-        <Tooltip>
-          <TooltipTrigger className="cursor-help rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] normal-case tracking-normal text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background">
-            deterministic · server-computed
-          </TooltipTrigger>
-          <TooltipContent>
-            Computed by a fixed server-side rule from the collected signals (KEV,
-            EPSS, public exploits, ransomware use, CVSS) after the model returns.
-            The LLM does not pick this verdict; the same signals always produce the
-            same decision.
-          </TooltipContent>
-        </Tooltip>
+        {shared ? (
+          <SharedClaimChip subject="verdict" />
+        ) : (
+          <Tooltip>
+            <TooltipTrigger className="cursor-help rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] normal-case tracking-normal text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background">
+              deterministic · server-computed
+            </TooltipTrigger>
+            <TooltipContent>
+              Computed by a fixed server-side rule from the signals the tools
+              returned (KEV, EPSS, public exploits, ransomware use, CVSS), read from
+              the run&apos;s own trajectory rather than from the fields the model
+              wrote, after the model returns. The LLM does not pick this verdict; the
+              same tool returns always produce the same decision.
+            </TooltipContent>
+          </Tooltip>
+        )}
         <Link
           href="/guide#ssvc"
           className="ml-auto shrink-0 rounded text-[10px] font-normal normal-case tracking-normal text-primary hover:underline print:hidden"
@@ -581,14 +682,45 @@ function SsvcVerdict({ ssvc }: { ssvc: SsvcAssessment }) {
               </>
             ) : null}
           </p>
+          <SsvcBasisNote ssvc={ssvc} />
         </div>
       </div>
-      <SsvcDecisionTrace ssvc={ssvc} />
+      <SsvcDecisionTrace ssvc={ssvc} shared={shared} />
     </div>
   );
 }
 
-function SignalCoverageStrip({ coverage }: { coverage: FeedStatus[] }) {
+// The verdict is computed from the tool returns in the run's trajectory, not
+// from the fields the model wrote. When a signal had no usable evidence the
+// server falls back to the report for it and says so: this note is the
+// operator-facing form of that stamp. Silent when every signal came from a
+// tool return (the common case) or when the capture predates the field.
+function SsvcBasisNote({ ssvc }: { ssvc: SsvcAssessment }) {
+  if (!ssvc.basis || ssvc.basis === "evidence") return null;
+  const unverified = ssvc.unverified_signals ?? [];
+  const text =
+    ssvc.basis === "report"
+      ? "no trajectory was available; every signal was taken from the model's report"
+      : `${unverified.length} signal${unverified.length === 1 ? "" : "s"} taken from the model's report, not from a tool return`;
+  return (
+    <p className="flex items-start gap-1.5 text-[11px] text-warning" role="note">
+      <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
+      <span>
+        <span className="font-medium">verdict basis: {ssvc.basis}</span>
+        {" · "}
+        {text}
+        {unverified.length > 0 ? (
+          <>
+            {": "}
+            <span className="font-mono">{unverified.join(", ")}</span>
+          </>
+        ) : null}
+      </span>
+    </p>
+  );
+}
+
+function SignalCoverageStrip({ coverage, shared }: { coverage: FeedStatus[]; shared: boolean }) {
   if (!coverage || coverage.length === 0) return null;
   return (
     <div className="rounded-lg border border-border bg-card/50 p-3">
@@ -596,7 +728,9 @@ function SignalCoverageStrip({ coverage }: { coverage: FeedStatus[] }) {
         <Radar className="h-3.5 w-3.5" />
         Signal coverage
         <span className="normal-case tracking-normal text-muted-foreground">
-          what each feed actually returned; a miss or an error is reported as such, never hidden
+          {shared
+            ? "per-feed results as written in the shared link"
+            : "what each feed actually returned; a miss or an error is reported as such, never hidden"}
         </span>
       </div>
       <div className="flex flex-wrap gap-1.5">
@@ -668,15 +802,9 @@ function AttackSection({ techniques }: { techniques: TriageReport["attack_techni
         <Card key={technique.id} className="overflow-hidden">
           <CardHeader className="space-y-2 pb-3">
             <div className="flex flex-wrap items-center gap-2">
-              <a
-                href={technique.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="font-mono text-sm font-semibold text-primary hover:underline"
-              >
+              <ExternalRef url={technique.url} className="font-mono text-sm font-semibold" icon>
                 {technique.id}
-                <ExternalLink className="ml-1 inline h-3 w-3" />
-              </a>
+              </ExternalRef>
               <span className="text-sm font-medium">{technique.name}</span>
             </div>
             <div className="flex flex-wrap items-center gap-1">
@@ -704,14 +832,12 @@ function AttackSection({ techniques }: { techniques: TriageReport["attack_techni
               <ul className="space-y-1 text-xs">
                 {technique.mitigations.map((m) => (
                   <li key={m.id} className="flex items-center gap-2">
-                    <a
-                      href={m.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex min-h-6 shrink-0 items-center font-mono text-primary hover:underline"
+                    <ExternalRef
+                      url={m.url}
+                      className="inline-flex min-h-6 shrink-0 items-center font-mono"
                     >
                       {m.id}
-                    </a>
+                    </ExternalRef>
                     <span className="leading-snug">{m.name}</span>
                   </li>
                 ))}
@@ -726,20 +852,24 @@ function AttackSection({ techniques }: { techniques: TriageReport["attack_techni
 
 function GroundingBadge({
   grounding,
+  shared,
   onClick,
 }: {
   grounding: GroundingAssessment;
+  shared: boolean;
   onClick: () => void;
 }) {
   const meta = GROUNDING_META[grounding.status];
-  const Icon = meta.icon;
+  // A shared "grounded" must not wear the success check: it is a claim.
+  const Icon = shared ? CircleDashed : meta.icon;
   const flagged = grounding.unbacked + grounding.mismatched;
-  const label =
+  const status =
     grounding.status === "grounded"
       ? `grounded ${grounding.supported}/${grounding.claims_checked}`
       : grounding.status === "suspect"
         ? `suspect ${flagged}/${grounding.claims_checked}`
         : "grounding not evaluated";
+  const label = shared ? `claimed: ${status}` : status;
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -749,16 +879,15 @@ function GroundingBadge({
           className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
         >
           <Badge variant="outline" className="gap-1 text-xs uppercase tracking-wider">
-            <Icon className={cn("h-3 w-3 shrink-0", meta.iconClass)} />
+            <Icon className={cn("h-3 w-3 shrink-0", shared ? "text-muted-foreground/60" : meta.iconClass)} />
             {label}
           </Badge>
         </button>
       </TooltipTrigger>
       <TooltipContent>
-        Deterministic grounding verification: after the model returns, the server
-        re-checks every tool-derived claim (CVE identity, CVSS, KEV, EPSS, exploit
-        flags, ATT&CK ids) against the tool results captured from the run. Not the
-        model&apos;s self-assessment. Click for the per-claim breakdown.
+        {shared
+          ? "Grounding as written in the shared link. This site cannot re-run the verifier without the original tool results, so the status is a claim, not a check. Click for the per-claim breakdown the link carries."
+          : "Deterministic grounding verification: after the model returns, the server re-checks every tool-derived claim (CVE identity, CVSS, KEV, EPSS, exploit flags, ATT&CK ids) against the tool results captured from the run. Not the model's self-assessment. Click for the per-claim breakdown."}
       </TooltipContent>
     </Tooltip>
   );
@@ -766,15 +895,17 @@ function GroundingBadge({
 
 function GroundingSection({
   grounding,
+  shared,
   open,
   onOpenChange,
 }: {
   grounding: GroundingAssessment;
+  shared: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
   const meta = GROUNDING_META[grounding.status];
-  const StatusIcon = meta.icon;
+  const StatusIcon = shared ? CircleDashed : meta.icon;
   const counters: { label: string; value: number; claimStatus: GroundingClaimStatus }[] = [
     { label: "supported", value: grounding.supported, claimStatus: "supported" },
     { label: "unbacked", value: grounding.unbacked, claimStatus: "unbacked" },
@@ -791,18 +922,24 @@ function GroundingSection({
               <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                 Grounding verification
               </span>
-              <span
-                className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] normal-case tracking-normal text-muted-foreground"
-                title="Computed by a fixed server-side verifier from the tool results captured in the run's message history, after the model returns. The LLM does not produce this assessment; the same run always verifies the same way."
-              >
-                deterministic · server-computed
-              </span>
+              {shared ? (
+                <SharedClaimChip subject="grounding assessment" plain />
+              ) : (
+                <span
+                  className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] normal-case tracking-normal text-muted-foreground"
+                  title="Computed by a fixed server-side verifier from the tool results captured in the run's message history, after the model returns. The LLM does not produce this assessment; the same run always verifies the same way."
+                >
+                  deterministic · server-computed
+                </span>
+              )}
               <Badge variant="secondary" className="gap-1 text-[10px]">
-                <StatusIcon className={cn("h-3 w-3 shrink-0", meta.iconClass)} />
-                {meta.label}
+                <StatusIcon className={cn("h-3 w-3 shrink-0", shared ? "text-muted-foreground/60" : meta.iconClass)} />
+                {shared ? `claimed: ${meta.label}` : meta.label}
               </Badge>
               <span className="text-[11px] normal-case tracking-normal text-muted-foreground">
-                every tool-derived claim re-checked against what the tools actually returned
+                {shared
+                  ? "as written in the shared link; this site cannot re-run the check"
+                  : "every tool-derived claim re-checked against what the tools actually returned"}
               </span>
             </div>
             <ChevronDown
@@ -816,7 +953,9 @@ function GroundingSection({
         <CollapsibleContent>
           <Separator />
           <CardContent className="space-y-3 pt-4">
-            <p className="text-sm leading-relaxed">{meta.gloss}</p>
+            <p className="text-sm leading-relaxed">
+              {shared ? `The link claims: ${meta.gloss}` : meta.gloss}
+            </p>
             {grounding.status !== "not_evaluated" && (
               <div className="flex flex-wrap gap-1.5">
                 <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1 text-[11px]">
@@ -846,7 +985,9 @@ function GroundingSection({
               <p className="text-xs text-muted-foreground">
                 {grounding.claims_checked === 0
                   ? "The report makes no checkable tool-derived claims."
-                  : `All ${grounding.claims_checked} tool-derived claims match the tool returns captured from this run.`}
+                  : shared
+                    ? `The link claims all ${grounding.claims_checked} tool-derived claims matched the tool returns of its run.`
+                    : `All ${grounding.claims_checked} tool-derived claims match the tool returns captured from this run.`}
               </p>
             )}
             {grounding.findings.length > 0 && (

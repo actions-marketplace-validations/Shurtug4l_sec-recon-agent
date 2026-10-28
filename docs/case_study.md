@@ -20,7 +20,7 @@ whatever the person in front of you pasted into the box. The agent's whole job i
 to read this material and reason over it.
 
 That is also the exact shape of indirect prompt injection (OWASP LLM01, MITRE
-ATLAS AML.T0040). The dangerous input is not a side channel to be closed; it is
+ATLAS AML.T0051.001). The dangerous input is not a side channel to be closed; it is
 the payload the system exists to process. You cannot refuse to read it without
 deleting the product.
 
@@ -96,9 +96,21 @@ inflates the token bill for absent fields.
 
 A subtle attack on this layer is marker forgery: the payload itself contains a
 literal `</UNTRUSTED_CONTENT>` to close the fence early and "escape" into trusted
-context. The wrapper defeats this structurally by applying once around the entire
-field, so a forged closing tag lands *inside* the fenced region as more data. The
-test `test_marker_forgery_in_payload_does_not_truncate_fence` pins exactly this.
+context. Two mechanisms make that structurally impossible rather than merely
+unlikely. Every marker carries a random id minted once per server process
+(`<UNTRUSTED_CONTENT id="3f9a1c2e">`), the prompt tells the model that only a pair
+with matching ids is a boundary, and the text's author cannot know the id. And
+before wrapping, any marker-shaped token already inside the payload has its `<`
+escaped to `&lt;`, so the literal tag cannot appear between the real markers at
+all, whatever id it claims. The text stays legible; only the boundary is
+sanitized, never the content. Field caps are sized as payload budget plus the
+fence overhead, and the payload is truncated *after* neutralization, so a
+description stuffed with forged closers cannot push a field over its limit
+either. `test_marker_forgery_in_payload_does_not_truncate_fence` and the fence
+tests in `tests/mcp_server/test_security.py` pin all of this. An earlier revision
+applied the wrapper once and called that structural; the September 2026 self-audit
+pointed out that a flat text convention has no nesting to lean on, and the id plus
+the neutralization are the fix.
 
 ### Layer 2: name the boundary in the system prompt
 
@@ -143,21 +155,39 @@ A schema bounds the shape of the output, not its content: a fully persuaded
 model can still choose a wrong-but-valid severity. So the highest-stakes call in
 the report, the SSVC remediation verdict, was removed from the model entirely.
 `agent/ssvc.py` computes it server-side, in code, from the signals the tools
-actually collected: KEV membership, ransomware association, public exploit
-availability, EPSS probability and percentile, CVSS severity. The API stamps the
-result onto the report after the run; the model echoes the verdict, it does not
-decide it. Every verdict carries the rule that fired and the driving CVE, so the
-decision is auditable rather than oracular.
+actually returned: KEV membership, ransomware association, public exploit
+availability, EPSS probability and percentile, CVSS severity, each read from the
+typed tool returns captured in the run's trajectory (the same evidence index the
+grounding verifier uses), never from the fields the model wrote. The API stamps
+the result onto the report after the run; the model echoes the verdict, it does
+not decide it. Every verdict carries the rule that fired, the driving CVE, and
+its `basis`: `evidence` when every signal came from a tool return, `mixed` when
+a signal had no usable evidence and was taken from the report (each one named in
+`unverified_signals`), `report` when no trajectory was available at all. A
+verdict on the model's word is never presented as one on the tools' word.
 
 This changes the attacker's problem qualitatively. An injection that fully
 persuades the model cannot move `Act` to `Track`, because the model does not
-hold that pen. To corrupt the verdict, an attacker has to corrupt the typed tool
-results themselves (compromise a feed, forge a KEV entry), which is a different
-and much harder attack than talking a language model into something, and one the
-host-locked, size-capped tool clients are built against. The same
-authority-outside-the-model pattern is reused wherever a decision matters: the
-SBOM gate computes its per-finding verdicts with the same rule engine, and the
-next layer applies it to factual claims.
+hold that pen: writing `in_kev_catalog: false` into the report changes nothing
+when `kev_check` returned `true`, and talking the model out of calling
+`kev_check` at all yields a verdict stamped `mixed` with `kev` named as
+unverified, not a clean one. To corrupt the verdict, an attacker has to corrupt
+the typed tool results themselves, which is what the host-locked, size-capped
+tool clients are built against (how hard that is varies by feed: KEV and EPSS
+are authoritative catalogs, the public-exploit signal is the softest and is
+worth Attend on its own). The same authority-outside-the-model pattern is reused
+wherever a decision matters: the SBOM gate computes its per-finding verdicts
+with the same rule engine, and the next layer applies it to factual claims.
+
+Honesty note: an earlier revision of this layer fed the rule engine the report's
+own CVE fields. The function was pure and the verdict reproducible, but its
+inputs traversed the model, which is exactly the property an injection exploits.
+The grounding verifier caught inflated claims after the fact, but by its own
+claim policy it does not judge a lookup that was simply skipped, so a suppressed
+`kev_check` left the verdict on the model's word with nothing on the record
+saying so. A self-audit in September 2026 found the gap; the evidence-derived
+inputs and the `basis` stamp described above are the fix. The gate path had been
+evidence-driven from the start; the agent path now is too.
 
 ### Layer 5: claims verified against the trajectory (evidence boundary)
 
@@ -199,11 +229,11 @@ Every claim above has a test whose job is to prove the claim false:
   against the live stack, each tagged with the MITRE ATLAS technique it
   exercises, producing a per-technique resistance rate rather than a single
   green checkmark. The stamped rate is published in
-  [`SCORECARD.md`](../SCORECARD.md), currently 15/18, with the three payloads
+  [`SCORECARD.md`](../SCORECARD.md), currently 17/18, with the one payload
   that got through documented rather than hidden.
 - 11 recorded real trajectories replay bit-exact inside the required CI suite:
   the deterministic verdict and the grounding assessment are recomputed from the
-  recorded evidence on every merge (150 of 150 claims grounded at recording
+  recorded evidence on every merge (161 of 161 claims grounded at recording
   time). A staleness hash over the system prompt, the tool schemas, and the
   report schema refuses to certify behavior the recordings have not seen, so any
   behavior-bearing edit forces a re-record against the live model.
@@ -233,8 +263,9 @@ and the verdict and grounding layers stand behind the schema. The grounding
 verifier checks structured, tool-derived claims; the free-text summary is
 length-capped and eval-scored but not fact-checked line by line, so a grounded
 report can still phrase things badly. The red-team resistance rate is a
-measurement, not a proof: 15/18 means three payloads worked, and the honest
-response is documenting them and re-running the battery on change, not rounding
+measurement, not a proof: 17/18 means one payload worked (15/18 on the July
+run, before the fence carried an id and the prompt named it), and the honest
+response is documenting it and re-running the battery on change, not rounding
 up to "resistant". The audit trail (a SHA-256 hash chain over each triage) is
 tamper-evident, not tamper-proof, and is demo-grade rather than a production
 WORM store. Eleven golden cases is a smoke-grade sample; the calibration numbers

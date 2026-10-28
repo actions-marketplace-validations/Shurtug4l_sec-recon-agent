@@ -13,7 +13,7 @@ import pytest
 from pydantic import SecretStr
 
 import sec_recon_agent.gate.runner as runner_mod
-from sec_recon_agent.agent.schema import Severity, SsvcDecision
+from sec_recon_agent.agent.schema import Severity, SsvcBasis, SsvcDecision
 from sec_recon_agent.config import settings
 from sec_recon_agent.gate.models import FeedCoverage, SkipReason
 from sec_recon_agent.gate.runner import run_gate
@@ -26,6 +26,7 @@ from sec_recon_agent.mcp_server.errors import (
 from sec_recon_agent.mcp_server.models import (
     EpssScore,
     EpssStatus,
+    ExploitArmStatus,
     ExploitCheck,
     KevCheck,
     OsvScanResult,
@@ -98,7 +99,22 @@ def feeds(monkeypatch: pytest.MonkeyPatch) -> tuple[Calls, Responses]:
 
     async def fake_exploit(cve_id: str) -> ExploitCheck:
         calls["exploit"].append(cve_id)
-        return _resolve("exploit", cve_id, ExploitCheck(cve_id=cve_id, has_public_exploit=False))
+        return _resolve(
+            "exploit",
+            cve_id,
+            ExploitCheck(
+                cve_id=cve_id,
+                has_public_exploit=False,
+                exploit_db=ExploitArmStatus.NOT_FOUND,
+                # Mirrors the real tool: the GitHub arm is skipped by
+                # configuration without a token, consulted with one.
+                github=(
+                    ExploitArmStatus.SKIPPED
+                    if settings.github_token is None
+                    else ExploitArmStatus.NOT_FOUND
+                ),
+            ),
+        )
 
     monkeypatch.setattr(runner_mod, "osv_lookup", fake_osv)
     monkeypatch.setattr(runner_mod, "kev_check", fake_kev)
@@ -130,6 +146,9 @@ class TestKevActPath:
         assert f.coverage.kev is FeedCoverage.OK
         assert report.ssvc.decision is SsvcDecision.ACT
         assert report.ssvc.driving_cve == "CVE-2021-0001"
+        # The gate feeds typed tool results: never the model's word.
+        assert report.ssvc.basis is SsvcBasis.EVIDENCE
+        assert report.ssvc.unverified_signals == []
         assert report.policy.passed is False
         assert report.policy.triggered == ["CVE-2021-0001"]
 
@@ -275,6 +294,27 @@ class TestCoverageHonesty:
         full = await run_gate("liba==1.0\n")
         assert full.findings[0].coverage.exploits is FeedCoverage.OK
 
+    async def test_errored_exploit_arm_is_a_coverage_gap_not_a_clean_miss(
+        self, feeds: tuple[Calls, Responses], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The tool no longer raises for one failing source; the gate must
+        still see the gap. A throttled GitHub arm is `error`, never `ok`."""
+        _, responses = feeds
+        monkeypatch.setattr(settings, "github_token", SecretStr("ghp_x"))
+        responses["osv"]["liba"] = osv_result("liba", "PyPI", "1.0", [vuln("CVE-2021-0001")])
+        responses["exploit"]["CVE-2021-0001"] = ExploitCheck(
+            cve_id="CVE-2021-0001",
+            has_public_exploit=False,
+            exploit_db=ExploitArmStatus.NOT_FOUND,
+            github=ExploitArmStatus.ERROR,
+        )
+
+        report = await run_gate("liba==1.0\n")
+
+        assert report.findings[0].coverage.exploits is FeedCoverage.ERROR
+        assert report.findings[0].exploits_public is False
+        assert report.policy.coverage_gaps == 1
+
     async def test_osv_error_skips_component_and_counts_gap(
         self, feeds: tuple[Calls, Responses]
     ) -> None:
@@ -318,7 +358,11 @@ class TestSsvcSignalPaths:
         responses["osv"]["liba"] = osv_result("liba", "PyPI", "1.0", [vuln("CVE-2021-0001")])
         responses["epss"]["CVE-2021-0001"] = epss_found("CVE-2021-0001", 0.9, 0.99)
         responses["exploit"]["CVE-2021-0001"] = ExploitCheck(
-            cve_id="CVE-2021-0001", has_public_exploit=True, exploit_db_ids=["12345"]
+            cve_id="CVE-2021-0001",
+            has_public_exploit=True,
+            exploit_db=ExploitArmStatus.FOUND,
+            github=ExploitArmStatus.SKIPPED,
+            exploit_db_ids=["12345"],
         )
 
         report = await run_gate("liba==1.0\n")

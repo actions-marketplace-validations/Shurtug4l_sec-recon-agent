@@ -54,15 +54,29 @@ Every triage seals one row into an append-only, hash-chained SQLite log (`AUDIT_
 
 ## Operational safety rails
 
-Two guards in front of `/v1/triage`, both default off, both refusing with `503` **before** the agent is built (a refused request spends nothing on the LLM). They exist because an LLM endpoint reachable beyond localhost is a denial-of-wallet target: the per-request round cap (`AGENT_REQUEST_LIMIT`) bounds a single run, but nothing otherwise bounds the aggregate an attacker drives by repeating requests.
+Two guards in front of `/v1/triage`, both default off, both refusing with `503` **before** the agent is built (a refused request spends nothing on the LLM). They exist because an LLM endpoint reachable beyond localhost is a denial-of-wallet target: the per-run bounds cap a single run, but nothing otherwise bounds the aggregate an attacker drives by repeating requests.
+
+Every run is charged to the budget window and sealed into the audit trail from the SSE generator's cleanup, on every exit path: report delivered, agent error, bound hit, deadline hit, or client disconnect. The last one matters most: a client that aborts the connection one round before completion is billed by the provider in full, and a rail that recorded nothing for it would be defeated by the cheapest client behaviour there is. Such runs seal with `outcome=cancelled` (an aborted run is not a success with an empty report), and the audit row records the model the run actually used, including a per-request override.
+
+```bash
+# Per-run bounds. Each stops the run when hit; the run's consumption is still
+# charged and audited. Defaults sit well above the recorded golden runs
+# (max 8 rounds, ~110k tokens, 107 s) and well below the pathological case.
+AGENT_REQUEST_LIMIT=25          # model rounds
+AGENT_TOOL_CALLS_LIMIT=40       # tool calls (rounds alone do not bound them: several per turn)
+AGENT_TOTAL_TOKENS_LIMIT=250000 # input + output tokens, the cost driver
+TRIAGE_DEADLINE_SECONDS=300     # wall clock; one NVD call can take ~75 s with retries
+```
+
+An unset variable keeps the built-in default (compose forwards it as an empty string, which is treated as "default", never as "disabled"); `off` disables one bound explicitly.
 
 ```bash
 # Denial-of-wallet: hard ceiling on estimated LLM spend over a rolling 24h
 # window, summed in-process from each run's token usage x the per-model price
-# table (eval/cost.py). Over it, /v1/triage returns 503 until older spend ages
-# out. The window is in memory, so it resets on restart -- that still bounds
-# spend between restarts, which is the threat; a restart-durable counter is the
-# production evolution.
+# table (eval/cost.py), charged on every exit path. Over it, /v1/triage returns
+# 503 until older spend ages out. The window is in memory, so it resets on
+# restart -- that still bounds spend between restarts, which is the threat; a
+# restart-durable counter is the production evolution.
 DENIAL_OF_WALLET_USD_PER_DAY=5
 
 # Kill-switch (two forms):
@@ -81,7 +95,7 @@ In docker-compose `KILL_SWITCH_FILE` defaults to a tmpfs path, so the file toggl
 
 ## MCP transport authentication
 
-The MCP server (`:8001`) is the more powerful surface in the stack: direct tool access, no agent guardrails. By default it has no auth of its own and relies on docker-compose internal-network isolation (the port is **not** published to the host). Whenever the port is reachable beyond that perimeter, set a shared bearer secret:
+The MCP server (`:8001`) is the more powerful surface in the stack: direct tool access, no agent guardrails. By default it has no auth of its own. docker-compose publishes it on the host loopback only (`127.0.0.1:8001`), so the open default is reachable by any process on the host and by any container on the compose network, nothing further. Whenever that is not acceptable, or the port is published beyond loopback, set a shared bearer secret:
 
 ```bash
 # In .env or the host environment
@@ -90,7 +104,9 @@ MCP_AUTH_TOKEN="long-random-string"
 
 With the token set, every HTTP request to the MCP server must carry `Authorization: Bearer long-random-string` or the response is `401 Unauthorized` with `WWW-Authenticate: Bearer realm="mcp"`. Comparison is constant-time (`secrets.compare_digest`). Lifespan and non-HTTP ASGI scopes pass through untouched. The token is held as `SecretStr` in `config.py` so it never leaks into structured logs.
 
-The `agent-api` process needs no extra configuration: it talks to the MCP server over the in-process Pydantic AI client and is co-deployed with the secret. Standalone callers (third-party MCP clients, manual smoke from a separate host) must attach the header explicitly.
+The transport crosses a container boundary (the agent's Pydantic AI client speaks HTTP+SSE to `mcp-server:8001`), so the same secret has to reach both processes: docker-compose forwards `MCP_AUTH_TOKEN` to `mcp-server`, which enforces it, and to `agent-api`, whose MCP client presents it as `Authorization: Bearer <token>` on every request. One variable in `.env` enables the gate end to end; an integration test in `tests/mcp_server/test_auth.py` serves the real ASGI app on an ephemeral port, lists tools through the authenticated client, and asserts the unauthenticated one is refused. Standalone callers (third-party MCP clients, manual smoke from a separate host) must attach the header explicitly.
+
+DNS-rebinding protection is on regardless of the token. FastMCP enables it by itself only when bound to a loopback address; in compose the server binds `0.0.0.0` so the other container can reach it, which would leave the protection off. The server therefore enables it explicitly: a request whose `Host` header is not in `MCP_ALLOWED_HOSTS` (default `127.0.0.1:*,localhost:*,[::1]:*,mcp-server:*`, `host:*` matching any port) is refused with `421`, and any request carrying a browser `Origin` header is refused outright, since nothing browser-side is meant to talk to this server. A web page that rebinds its own domain to `127.0.0.1` therefore cannot drive the published port from a visitor's browser. Extend the list if you rename the compose service or front the server with another hostname.
 
 ## Egress allowlist (opt-in)
 
@@ -173,6 +189,8 @@ The full `GateReport` JSON (findings, per-feed coverage, skipped components, agg
 
 The gate ships as a composite action at the repository root; the action ref is the package source and its `uv.lock` is the dependency source (installed with `--require-hashes`), so pinning the action pins the gate and its whole dependency tree:
 
+Use `v0.1.2` or later. `v0.1.1` and `v0.1.0` installed their dependencies unlocked and no longer start: the resolver now picks mcp 2.x, where `FastMCP` does not exist.
+
 ```yaml
 permissions:
   contents: read
@@ -182,7 +200,7 @@ steps:
   - uses: actions/checkout@v7
   - uses: anchore/sbom-action@v0.24.0
     with: { path: ., format: cyclonedx-json, output-file: sbom.cdx.json, upload-artifact: false }
-  - uses: Shurtug4l/sec-recon-agent@v0.1.1
+  - uses: Shurtug4l/sec-recon-agent@v0.1.4
     with:
       sbom-path: sbom.cdx.json
       fail-on: act # act | attend | track-star | never

@@ -17,14 +17,18 @@ from defusedxml import ElementTree as ET  # noqa: N817  # ET is the conventional
 from defusedxml.common import DefusedXmlException
 from pydantic import Field
 
+from sec_recon_agent.mcp_server.effects import declared_tool
 from sec_recon_agent.mcp_server.errors import MalformedNmapXmlError
 from sec_recon_agent.mcp_server.models import (
+    NMAP_BANNER_CHARS,
+    NMAP_HOSTNAME_CHARS,
+    NMAP_HOSTNAMES_MAX,
+    NMAP_NAME_CHARS,
     NmapHost,
     NmapPort,
     NmapScanResult,
 )
 from sec_recon_agent.mcp_server.security import fence_untrusted
-from sec_recon_agent.mcp_server.server import mcp
 from sec_recon_agent.observability import get_tracer
 
 log = structlog.get_logger()
@@ -63,13 +67,16 @@ def _parse_port(port_el: XmlElement) -> NmapPort | None:
     product = service_el.get("product") if service_el is not None else None
     version = service_el.get("version") if service_el is not None else None
 
+    # Every attribute is attacker-controlled: the scan XML is caller input.
+    # Names are truncated to short identifiers; banners are fenced free text
+    # with their own budget (truncated after marker neutralization).
     return NmapPort(
         portid=portid,
-        protocol=protocol,
-        state=state,
-        service=service,
-        product=fence_untrusted(product),
-        version=fence_untrusted(version),
+        protocol=protocol[:NMAP_NAME_CHARS],
+        state=state[:NMAP_NAME_CHARS],
+        service=service[:NMAP_NAME_CHARS] if service is not None else None,
+        product=fence_untrusted(product, max_chars=NMAP_BANNER_CHARS),
+        version=fence_untrusted(version, max_chars=NMAP_BANNER_CHARS),
     )
 
 
@@ -87,17 +94,21 @@ def _parse_host(host_el: XmlElement) -> NmapHost | None:
     # Cap hostnames and ports per host: a crafted Nmap XML with thousands
     # of <hostname> or <port> children should not be able to inflate the
     # returned payload arbitrarily.
-    hostnames = [name for hn in host_el.findall(".//hostname") if (name := hn.get("name"))][:50]
+    hostnames = [
+        name[:NMAP_HOSTNAME_CHARS]
+        for hn in host_el.findall(".//hostname")
+        if (name := hn.get("name"))
+    ][:NMAP_HOSTNAMES_MAX]
     ports: list[NmapPort] = []
     for port_el in host_el.findall(".//port")[:200]:
         parsed = _parse_port(port_el)
         if parsed is not None:
             ports.append(parsed)
 
-    return NmapHost(ip=ip, hostnames=hostnames, ports=ports)
+    return NmapHost(ip=ip[:NMAP_NAME_CHARS], hostnames=hostnames, ports=ports)
 
 
-@mcp.tool()
+@declared_tool()
 def nmap_parse_xml(xml_content: NmapXmlStr) -> NmapScanResult:
     """Parse Nmap XML output into a typed scan result.
 

@@ -7,6 +7,7 @@ from sec_recon_agent.agent.schema import (
     CVEReference,
     Severity,
     SsvcAssessment,
+    SsvcBasis,
     SsvcDecision,
     TriageReport,
 )
@@ -131,7 +132,12 @@ def _report(
     with_ssvc: bool = True,
 ) -> TriageReport:
     ssvc = (
-        SsvcAssessment(decision=SsvcDecision.TRACK, rule="baseline", rationale="r")
+        SsvcAssessment(
+            decision=SsvcDecision.TRACK,
+            rule="baseline",
+            rationale="r",
+            basis=SsvcBasis.EVIDENCE,
+        )
         if with_ssvc
         else None
     )

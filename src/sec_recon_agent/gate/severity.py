@@ -4,7 +4,8 @@ OSV surfaces severity as the upstream-authored score string verbatim: almost
 always a CVSS vector (v2 vectors are bare "AV:N/...", v3/v4 carry a
 "CVSS:3.x/" / "CVSS:4.0/" prefix), occasionally a plain numeric score. The
 base score is computed deterministically from the vector via the `cvss`
-library (RedHatProductSecurity), then banded with the NVD qualitative cuts.
+library (RedHatProductSecurity), then banded with the NVD qualitative cuts
+(`agent/ssvc.py::band_for_score`, shared with the triage path).
 Anything unparseable yields (None, None) - the SSVC decision still works
 (Act/Attend are KEV/EPSS/exploit-driven; only the severity-based Track* rung
 loses signal) and the SARIF just omits security-severity for that rule.
@@ -16,22 +17,11 @@ from cvss import CVSS2, CVSS3, CVSS4, CVSSError
 
 from sec_recon_agent.agent.schema import Severity
 
-# NVD qualitative bands (CVSS v3/v4 spec): 9.0+ critical, 7.0-8.9 high,
-# 4.0-6.9 medium, 0.1-3.9 low. A computed 0.0 maps to INFO: evaluated, no
-# impact - distinct from None, which means "no usable severity data at all".
-_BANDS: tuple[tuple[float, Severity], ...] = (
-    (9.0, Severity.CRITICAL),
-    (7.0, Severity.HIGH),
-    (4.0, Severity.MEDIUM),
-    (0.1, Severity.LOW),
-)
+# Banding is shared with the agent path's evidence-derived severity signal so
+# a CVSS score lands in the same qualitative band whichever path scored it.
+from sec_recon_agent.agent.ssvc import band_for_score
 
-
-def band_for_score(score: float) -> Severity:
-    for cut, severity in _BANDS:
-        if score >= cut:
-            return severity
-    return Severity.INFO
+__all__ = ["band_for_score", "severity_from_token"]
 
 
 def _base_score(token: str) -> float | None:

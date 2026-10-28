@@ -29,17 +29,15 @@ download.
 import asyncio
 import re
 from collections.abc import Awaitable, Callable
-from importlib.metadata import PackageNotFoundError, version
-from typing import get_args
+from typing import cast, get_args
 
-from sec_recon_agent.agent.schema import SsvcDecision
+from sec_recon_agent.agent.schema import SsvcBasis, SsvcDecision
 from sec_recon_agent.agent.ssvc import (
     SsvcSignals,
     assess_from_signals,
     decide_for_signals,
     decision_rank,
 )
-from sec_recon_agent.config import settings
 from sec_recon_agent.gate.models import (
     FailOn,
     FeedCoverage,
@@ -61,6 +59,7 @@ from sec_recon_agent.mcp_server.errors import (
 from sec_recon_agent.mcp_server.models import (
     EpssScore,
     EpssStatus,
+    ExploitArmStatus,
     ExploitCheck,
     KevCheck,
     OsvEcosystem,
@@ -73,6 +72,7 @@ from sec_recon_agent.mcp_server.tools.exploits import exploit_check
 from sec_recon_agent.mcp_server.tools.kev import kev_check
 from sec_recon_agent.mcp_server.tools.osv import osv_lookup
 from sec_recon_agent.mcp_server.tools.sbom import SBOM_MAX_CONTENT_BYTES, sbom_ingest
+from sec_recon_agent.version import package_version
 
 _OSV_ECOSYSTEMS: frozenset[str] = frozenset(get_args(OsvEcosystem))
 _CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,}$")
@@ -82,13 +82,6 @@ _FAIL_ON_DECISION: dict[str, SsvcDecision] = {
     "attend": SsvcDecision.ATTEND,
     "track_star": SsvcDecision.TRACK_STAR,
 }
-
-
-def _tool_version() -> str:
-    try:
-        return version("sec-recon-agent")
-    except PackageNotFoundError:
-        return "0.0.0"
 
 
 def _cve_alias(vuln: OsvVuln) -> str | None:
@@ -220,9 +213,15 @@ def _exploit_coverage(
         return FeedCoverage.NOT_APPLICABLE
     if skipped_kev_act:
         return FeedCoverage.SKIPPED
-    if isinstance(result, Exception):
+    if isinstance(result, Exception) or result is None:
         return FeedCoverage.ERROR
-    if settings.github_token is None:
+    # The tool no longer raises for one failing source: it reports per arm.
+    # An arm in ERROR is a coverage gap even when the other arm found
+    # something; an arm SKIPPED by configuration (no GITHUB_TOKEN) is honest
+    # partial coverage.
+    if not result.arms_conclusive():
+        return FeedCoverage.ERROR
+    if result.github is ExploitArmStatus.SKIPPED:
         return FeedCoverage.DEGRADED
     return FeedCoverage.OK
 
@@ -344,11 +343,11 @@ async def run_gate(
     eligible, skipped = _partition(ingested.components)
 
     async def _lookup(comp: SbomComponent) -> OsvScanResult:
-        # Version/ecosystem non-None and OSV-valid by _partition construction.
-        # The FastMCP decorator erases the tool's annotations to Any; pin the
-        # return type back here.
-        result: OsvScanResult = await osv_lookup(comp.name, comp.ecosystem, comp.version)
-        return result
+        # Version/ecosystem non-None and OSV-valid by _partition construction;
+        # narrow them to the tool's typed signature.
+        return await osv_lookup(
+            comp.name, cast(OsvEcosystem, comp.ecosystem), cast(str, comp.version)
+        )
 
     sem = asyncio.Semaphore(concurrency)
     osv_results: dict[int, OsvScanResult | OsvError] = {}
@@ -405,10 +404,10 @@ async def run_gate(
     raw_epss = await _gather_keyed(
         unique_cves, epss_score, concurrency=concurrency, warm_first=False
     )
-    for cve_id, outcome in raw_epss.items():
-        if isinstance(outcome, Exception) and not isinstance(outcome, EpssError):
-            raise outcome
-        epss_results[cve_id] = outcome
+    for cve_id, epss_outcome in raw_epss.items():
+        if isinstance(epss_outcome, Exception) and not isinstance(epss_outcome, EpssError):
+            raise epss_outcome
+        epss_results[cve_id] = epss_outcome
 
     kev_act = {
         cve_id
@@ -420,10 +419,12 @@ async def run_gate(
     raw_exploits = await _gather_keyed(
         exploit_targets, exploit_check, concurrency=concurrency, warm_first=True
     )
-    for cve_id, outcome in raw_exploits.items():
-        if isinstance(outcome, Exception) and not isinstance(outcome, ExploitsError):
-            raise outcome
-        exploit_results[cve_id] = outcome
+    for cve_id, exploit_outcome in raw_exploits.items():
+        if isinstance(exploit_outcome, Exception) and not isinstance(
+            exploit_outcome, ExploitsError
+        ):
+            raise exploit_outcome
+        exploit_results[cve_id] = exploit_outcome
 
     findings: list[GateFinding] = []
     for comp, vuln, cve_id in triples:
@@ -443,19 +444,25 @@ async def run_gate(
             )
         )
 
+    # Every signal above was read from a typed tool result (or is an honest
+    # absence recorded in `coverage`); nothing on this path comes from a model,
+    # so the verdict's basis is evidence by construction.
     ssvc = assess_from_signals(
         (
-            f.cve_id or f.osv_id,
-            SsvcSignals(
-                in_kev=f.in_kev,
-                known_ransomware=f.known_ransomware_use,
-                exploit_public=f.exploits_public,
-                epss_probability=f.epss_probability,
-                epss_percentile=f.epss_percentile,
-                severity=f.severity,
-            ),
-        )
-        for f in findings
+            (
+                f.cve_id or f.osv_id,
+                SsvcSignals(
+                    in_kev=f.in_kev,
+                    known_ransomware=f.known_ransomware_use,
+                    exploit_public=f.exploits_public,
+                    epss_probability=f.epss_probability,
+                    epss_percentile=f.epss_percentile,
+                    severity=f.severity,
+                ),
+            )
+            for f in findings
+        ),
+        basis=SsvcBasis.EVIDENCE,
     )
     policy = _evaluate_policy(findings, skipped, fail_on=fail_on, strict=strict)
 
@@ -468,5 +475,5 @@ async def run_gate(
         findings=findings,
         ssvc=ssvc,
         policy=policy,
-        tool_version=_tool_version(),
+        tool_version=package_version(),
     )

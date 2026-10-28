@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from sec_recon_agent.audit.models import (
     GENESIS_HASH,
@@ -60,22 +61,25 @@ _ROW_FIELDS = (
 )
 
 
-def _final_report(fixture: dict) -> dict:
+def _final_report(fixture: dict[str, Any]) -> dict[str, Any]:
     for frame in fixture.get("frames", []):
         if frame.get("event") == "final":
             data = frame["data"]
-            return json.loads(data) if isinstance(data, str) else data
+            report = json.loads(data) if isinstance(data, str) else data
+            if not isinstance(report, dict):
+                raise ValueError(f"fixture {fixture.get('slug')} final frame is not an object")
+            return report
     raise ValueError(f"fixture {fixture.get('slug')} has no final frame")
 
 
-def _load_fixtures() -> list[dict]:
+def _load_fixtures() -> list[dict[str, Any]]:
     fixtures = [json.loads(p.read_text()) for p in sorted(FIXTURES_DIR.glob("*.json"))]
     # Chronological chain order: by capture date, then slug for a stable tiebreak.
     fixtures.sort(key=lambda f: (str(f.get("capturedAt", "")), str(f.get("slug", ""))))
     return fixtures
 
 
-def _event_for(fixture: dict, seq: int) -> TriageEvent:
+def _event_for(fixture: dict[str, Any], seq: int) -> TriageEvent:
     report = _final_report(fixture)
     result_json = json.dumps(report, separators=(",", ":"), sort_keys=True)
     summary = summarize_for_audit(report)

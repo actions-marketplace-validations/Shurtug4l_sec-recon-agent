@@ -88,7 +88,7 @@ def test_replay_reproduces_recorded_outcomes(cassette: Cassette) -> None:
     invocations = extract_tool_invocations(messages)
     assert invocations, "no tool invocations extracted from a real trajectory"
 
-    ssvc = assess_ssvc(report.cves)
+    ssvc = assess_ssvc(report.cves, invocations)
     grounding = verify_grounding(report, invocations)
 
     assert ssvc.model_dump(mode="json") == cassette.outcomes.ssvc, (
@@ -102,15 +102,13 @@ def test_replay_reproduces_recorded_outcomes(cassette: Cassette) -> None:
 def test_replay_passes_the_golden_scorer(cassette: Cassette) -> None:
     case = next(c for c in GOLDEN_SET if c.id == cassette.case_id)
     report = TriageReport.model_validate(cassette.report)
+    invocations = extract_tool_invocations(
+        ModelMessagesTypeAdapter.validate_python(cassette.messages),
+    )
     stamped = report.model_copy(
         update={
-            "ssvc": assess_ssvc(report.cves),
-            "grounding": verify_grounding(
-                report,
-                extract_tool_invocations(
-                    ModelMessagesTypeAdapter.validate_python(cassette.messages),
-                ),
-            ),
+            "ssvc": assess_ssvc(report.cves, invocations),
+            "grounding": verify_grounding(report, invocations),
         },
     )
     verdict = score(case, stamped)

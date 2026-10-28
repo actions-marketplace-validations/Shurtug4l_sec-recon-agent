@@ -34,7 +34,8 @@ from opentelemetry.sdk.trace.export import (
     SpanExporter,
 )
 
-_PROJECT_VERSION: Final = "0.1.0"
+from sec_recon_agent.version import package_version
+
 _TRACER_INSTRUMENTATION_NAME: Final = "sec_recon_agent"
 
 
@@ -74,7 +75,7 @@ def setup_tracing(service_name: str) -> None:
     resource = Resource.create(
         {
             "service.name": service_name,
-            "service.version": _PROJECT_VERSION,
+            "service.version": package_version(),
         },
     )
     provider = TracerProvider(resource=resource)
