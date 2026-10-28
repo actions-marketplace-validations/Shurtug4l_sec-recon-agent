@@ -76,7 +76,7 @@ runs:
     - name: Install uv
       # Exact pin: setup-uv publishes no floating v8 major alias (v7 was the
       # last major with one); Dependabot keeps it current.
-      uses: astral-sh/setup-uv@v8.3.2
+      uses: astral-sh/setup-uv@v10.3.1
       with:
         # No cache: the cache-dependency-glob would have to resolve inside
         # the consumer's workspace, where this action's uv.lock does not
